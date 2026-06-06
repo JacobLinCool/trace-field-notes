@@ -56,6 +56,10 @@ If a selected model is unavailable or the user is not signed in, the report
 records the reason in model notes and returns the deterministic analysis instead
 of failing the whole Space.
 
+The Gradio endpoint is decorated with `@spaces.GPU` so the app can run on
+Hugging Face ZeroGPU hardware. The deterministic path still works without model
+weights; ZeroGPU only supplies the runtime contract and queueing surface.
+
 ## Agent Session Locations
 
 ```bash

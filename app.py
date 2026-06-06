@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import gradio as gr
+import spaces
 
 from analyzer import analyze_trace_file
 from model_runtime import MODEL_CHOICES
@@ -94,7 +95,7 @@ textarea, input {
 """
 
 
-def analyze_trace(
+def _analyze_trace_impl(
     trace_file: Any,
     include_user_context: bool = True,
     redact_secrets: bool = True,
@@ -134,6 +135,29 @@ def analyze_trace(
         json.dumps(result_json, indent=2, ensure_ascii=False) + "\n",
     )
     return report_markdown, result_json, redacted_file, report_file, json_file
+
+
+@spaces.GPU(duration=90)
+def analyze_trace(
+    trace_file: Any,
+    include_user_context: bool = True,
+    redact_secrets: bool = True,
+    ignore_tool_calls: bool = True,
+    report_style: str = "field_notes",
+    analysis_engine: str = "deterministic",
+    oauth_token: Optional[gr.OAuthToken] = None,
+) -> tuple[str, dict[str, Any], str, str, str]:
+    """ZeroGPU-visible Gradio endpoint."""
+
+    return _analyze_trace_impl(
+        trace_file=trace_file,
+        include_user_context=include_user_context,
+        redact_secrets=redact_secrets,
+        ignore_tool_calls=ignore_tool_calls,
+        report_style=report_style,
+        analysis_engine=analysis_engine,
+        oauth_token=oauth_token,
+    )
 
 
 def uploaded_path(trace_file: Any) -> Path:
