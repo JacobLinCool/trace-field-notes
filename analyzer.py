@@ -119,6 +119,7 @@ def analyze_trace_file(
     ignore_tool_calls: bool = True,
     report_style: str = "field_notes",
     analysis_engine: str = "deterministic",
+    hf_token: str | None = None,
 ) -> tuple[AnalysisResult, str]:
     """Parse, optionally redact, and analyze an uploaded trace file."""
 
@@ -192,6 +193,7 @@ def analyze_trace_file(
                     engine=analysis_engine,
                     result=result,
                     narrative_text=narrative_text,
+                    token=hf_token,
                 )
             except Exception as exc:
                 result.model_notes.append(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import gradio as gr
 
@@ -101,6 +101,7 @@ def analyze_trace(
     ignore_tool_calls: bool = True,
     report_style: str = "field_notes",
     analysis_engine: str = "deterministic",
+    oauth_token: Optional[gr.OAuthToken] = None,
 ) -> tuple[str, dict[str, Any], str, str, str]:
     """Gradio-callable analysis endpoint."""
 
@@ -116,6 +117,7 @@ def analyze_trace(
             ignore_tool_calls=ignore_tool_calls,
             report_style=report_style,
             analysis_engine=analysis_engine,
+            hf_token=oauth_token.token if oauth_token else None,
         )
     except TraceParseError as exc:
         raise gr.Error(str(exc)) from exc
@@ -204,6 +206,16 @@ with gr.Blocks(
                 ],
                 value="deterministic",
                 label="Analysis engine",
+            )
+            with gr.Row():
+                gr.LoginButton(
+                    value="Sign in for model assist",
+                    logout_value="Signed in as {}",
+                    size="sm",
+                )
+            gr.Markdown(
+                "Model-assisted modes use your signed-in Hugging Face OAuth token with the `inference-api` scope. "
+                "The deterministic engine does not require sign-in."
             )
             analyze_button = gr.Button("Analyze My Trace", variant="primary")
         with gr.Column(scale=2):

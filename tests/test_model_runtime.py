@@ -4,6 +4,7 @@ import json
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from analyzer import analyze_trace_file
 from model_runtime import PRIMARY_MODEL_ID, parse_model_json, run_model_assist
@@ -68,6 +69,27 @@ class ModelRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result.model_notes)
         self.assertIn("Unknown analysis engine", result.model_notes[0])
+
+    def test_analyzer_passes_hf_token_to_model_assist(self) -> None:
+        with patch("analyzer.run_model_assist") as run_model_assist:
+            run_model_assist.return_value = types.SimpleNamespace(
+                model_id=PRIMARY_MODEL_ID,
+                memo={
+                    "executive_memo": "memo",
+                    "detour_memo": "detour",
+                    "outcome_audit_memo": "audit",
+                    "caveats": [],
+                },
+                note="ok",
+            )
+            result, _ = analyze_trace_file(
+                Path("examples/sample_trace_redacted.jsonl"),
+                analysis_engine="nemotron",
+                hf_token="hf_test_token",
+            )
+
+        self.assertIn(PRIMARY_MODEL_ID, result.engine)
+        self.assertEqual(run_model_assist.call_args.kwargs["token"], "hf_test_token")
 
 
 if __name__ == "__main__":

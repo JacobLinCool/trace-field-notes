@@ -54,6 +54,7 @@ def run_model_assist(
     engine: str,
     result: AnalysisResult,
     narrative_text: str,
+    token: str | None = None,
     client: ChatClient | None = None,
 ) -> ModelAssistResult:
     """Ask the selected small model for a concise memo grounded in visible text."""
@@ -64,12 +65,19 @@ def run_model_assist(
 
     prompt = build_model_prompt(result, narrative_text)
     if client is None:
-        from huggingface_hub import InferenceClient
+        from huggingface_hub import InferenceClient, get_token
+
+        resolved_token = token or os.getenv("HF_TOKEN") or get_token()
+        if not resolved_token:
+            raise ValueError(
+                "Sign in with Hugging Face to enable small-model assist through "
+                "the inference-api OAuth scope."
+            )
 
         inference_client = InferenceClient(
             model=model_id,
             provider=os.getenv("TRACE_FIELD_NOTES_INFERENCE_PROVIDER") or None,
-            token=os.getenv("HF_TOKEN") or None,
+            token=resolved_token,
             timeout=float(os.getenv("TRACE_FIELD_NOTES_MODEL_TIMEOUT", "45")),
         )
     else:
