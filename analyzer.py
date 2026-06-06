@@ -196,9 +196,11 @@ def analyze_trace_file(
                     token=hf_token,
                 )
             except Exception as exc:
+                error_message = str(exc).strip().rstrip(".")
                 result.model_notes.append(
-                    "Small-model assist was requested but unavailable: "
-                    f"{type(exc).__name__}: {exc}. Deterministic analysis was returned."
+                    "Model assist was requested but unavailable: "
+                    f"{type(exc).__name__}: {error_message}. "
+                    "Deterministic analysis was returned."
                 )
             else:
                 result.engine = f"deterministic-codebook + {assist.model_id}"

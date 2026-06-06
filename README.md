@@ -22,11 +22,11 @@ telemetry by default and analyzes only the agent's visible narrative messages:
 what it planned, where it got stuck, how it detoured, how it recovered, and how
 it claimed completion.
 
-Built for the Build Small Hackathon as a Gradio app. The default engine uses a
-verified deterministic codebook analyzer so the Space can always start and
-produce a report. The app also exposes explicit small-model assist modes for
-`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` and `Qwen/Qwen3.5-9B` through
-Hugging Face Inference Providers when the user signs in with Hugging Face OAuth.
+Built for the Build Small Hackathon as a Gradio app. The default engine is the
+quick Qwen3.5 9B model-assisted path on ZeroGPU, with a verified deterministic
+codebook analyzer as the always-available recovery path. The app also exposes
+`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` through Hugging Face Inference
+Providers when the user signs in with Hugging Face OAuth.
 
 ## Run Locally
 
@@ -45,12 +45,10 @@ python3.11 -m unittest discover -s tests
 
 ## Analysis Engines
 
-- `Deterministic field notes`: default, local, no model dependency.
-- `Small-model assist: NVIDIA Nemotron 3 Nano 30B-A3B`: uses the hackathon-sized
-  30B total-parameter Nemotron model through the signed-in user's
-  `inference-api` OAuth scope.
-- `Quick small-model assist: Qwen3.5 9B`: optional lower-latency model-assisted
-  memo.
+- `Quick small-model assist: Qwen3.5 9B`: default model-assisted memo.
+- `NVIDIA Nemotron 3 Nano 30B-A3B assist`: uses Nemotron through the signed-in
+  user's `inference-api` OAuth scope.
+- `Deterministic field notes`: local, no model dependency.
 
 If a selected model is unavailable or the user is not signed in, the report
 records the reason in model notes and returns the deterministic analysis instead

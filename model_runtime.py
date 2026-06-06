@@ -1,4 +1,4 @@
-"""Optional small-model assistance through Hugging Face Inference Providers."""
+"""Optional model assistance through Hugging Face Inference Providers."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ MODEL_CHOICES = {
         "model_id": None,
     },
     "nemotron": {
-        "label": "Small-model assist: NVIDIA Nemotron 3 Nano 30B-A3B",
+        "label": "NVIDIA Nemotron 3 Nano 30B-A3B assist",
         "model_id": PRIMARY_MODEL_ID,
     },
     "qwen": {
@@ -57,7 +57,7 @@ def run_model_assist(
     token: str | None = None,
     client: ChatClient | None = None,
 ) -> ModelAssistResult:
-    """Ask the selected small model for a concise memo grounded in visible text."""
+    """Ask the selected model for a concise memo grounded in visible text."""
 
     model_id = model_id_for_engine(engine)
     if not model_id:
@@ -70,7 +70,7 @@ def run_model_assist(
         resolved_token = token or os.getenv("HF_TOKEN") or get_token()
         if not resolved_token:
             raise ValueError(
-                "Sign in with Hugging Face to enable small-model assist through "
+                "Sign in with Hugging Face to enable model assist through "
                 "the inference-api OAuth scope."
             )
 
@@ -103,7 +103,7 @@ def run_model_assist(
     return ModelAssistResult(
         model_id=model_id,
         memo=memo,
-        note=f"Small-model assist completed with {model_id}.",
+        note=f"Model assist completed with {model_id}.",
     )
 
 

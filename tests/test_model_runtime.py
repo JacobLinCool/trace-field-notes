@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from analyzer import analyze_trace_file
-from model_runtime import PRIMARY_MODEL_ID, parse_model_json, run_model_assist
+from model_runtime import MODEL_CHOICES, PRIMARY_MODEL_ID, parse_model_json, run_model_assist
 
 
 class FakeChatClient:
@@ -31,6 +31,12 @@ class FakeChatClient:
 
 
 class ModelRuntimeTests(unittest.TestCase):
+    def test_nemotron_label_does_not_call_it_small(self) -> None:
+        label = str(MODEL_CHOICES["nemotron"]["label"])
+
+        self.assertIn("NVIDIA Nemotron 3 Nano 30B-A3B", label)
+        self.assertNotIn("small", label.lower())
+
     def test_parse_model_json_validates_required_shape(self) -> None:
         memo = parse_model_json(
             json.dumps(
@@ -69,6 +75,17 @@ class ModelRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result.model_notes)
         self.assertIn("Unknown analysis engine", result.model_notes[0])
+
+    def test_analyzer_model_error_note_avoids_double_period(self) -> None:
+        with patch("analyzer.run_model_assist", side_effect=ValueError("needs login.")):
+            result, _ = analyze_trace_file(
+                Path("examples/sample_trace_redacted.jsonl"),
+                analysis_engine="qwen",
+            )
+
+        self.assertTrue(result.model_notes)
+        self.assertNotIn("..", result.model_notes[0])
+        self.assertIn("ValueError: needs login.", result.model_notes[0])
 
     def test_analyzer_passes_hf_token_to_model_assist(self) -> None:
         with patch("analyzer.run_model_assist") as run_model_assist:

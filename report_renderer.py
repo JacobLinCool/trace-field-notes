@@ -76,7 +76,7 @@ def render_model_memo(result: AnalysisResult) -> str:
     if not result.model_memo and not result.model_notes:
         return ""
 
-    lines = ["## Small-Model Memo"]
+    lines = ["## Model Memo"]
     if result.model_memo:
         lines.append(result.model_memo.get("executive_memo", ""))
         lines.append(f"**Detours:** {result.model_memo.get('detour_memo', '')}")

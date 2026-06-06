@@ -17,6 +17,8 @@ from report_renderer import render_report
 
 
 SPACE_URL = "https://huggingface.co/spaces/build-small-hackathon/trace-field-notes"
+DEFAULT_ANALYSIS_ENGINE = "qwen"
+SAMPLE_TRACE_PATH = "examples/sample_trace_redacted.jsonl"
 
 PRIVACY_WARNING = (
     "Agent traces can contain prompts, tool inputs, command outputs, local file paths, "
@@ -24,35 +26,22 @@ PRIVACY_WARNING = (
     "This app analyzes only visible agent narrative messages by default and does not need raw tool outputs."
 )
 
-HERO_MD = f"""
+HERO_MD = """
+**ZeroGPU field report**
+
 # Trace Field Notes
 
-See how your coding agent got stuck, detoured, recovered, and claimed success.
-
-Upload a Codex, Claude Code, or Pi Agent session log. The app extracts visible narrative messages, classifies difficulty episodes, and turns the session into a qualitative field report.
-
-> {PRIVACY_WARNING}
+Map where a coding agent got stuck, changed route, recovered, and claimed success.
 """
 
 SESSION_PATHS_MD = """
-## Find Your Session Log
+### Session Logs
 
 | Agent | Local session directory |
 |---|---|
 | Codex | `~/.codex/sessions` |
 | Claude Code | `~/.claude/projects` |
 | Pi Agent | `~/.pi/agent/sessions` |
-
-```bash
-# Codex
-ls ~/.codex/sessions
-
-# Claude Code
-ls ~/.claude/projects
-
-# Pi Agent
-ls ~/.pi/agent/sessions
-```
 """
 
 AGENT_PROMPT = f"""Use this Space as a tool.
@@ -69,25 +58,80 @@ AGENT_PROMPT = f"""Use this Space as a tool.
 
 CUSTOM_CSS = """
 :root {
-  --field-border: #d7d0c2;
-  --field-ink: #202124;
-  --field-muted: #605b52;
-  --field-paper: #fbfaf7;
-  --field-accent: #326b59;
+  --field-border: rgba(148, 163, 184, 0.28);
+  --field-ink: #f8fafc;
+  --field-muted: #94a3b8;
+  --field-panel: rgba(15, 23, 42, 0.74);
+  --field-panel-strong: rgba(15, 23, 42, 0.92);
+  --field-accent: #2f8a69;
+  --field-accent-strong: #23785d;
 }
 .gradio-container {
-  max-width: 1180px !important;
+  max-width: 1220px !important;
   color: var(--field-ink);
+}
+.hero {
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  background: linear-gradient(135deg, rgba(47, 138, 105, 0.18), rgba(15, 23, 42, 0.3));
+}
+.hero h1 {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.08;
+}
+.hero p {
+  max-width: 760px;
+  margin: 10px 0 0;
+  color: var(--field-muted);
+  font-size: 15px;
+}
+.hero strong {
+  margin-bottom: 8px;
+  color: #7dd3fc;
+  font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.privacy-callout {
+  margin: 12px 0 16px;
+  border-left: 3px solid #f59e0b;
+  padding: 10px 12px;
+  color: #dbe4ef;
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 0 6px 6px 0;
 }
 .trace-panel {
   border: 1px solid var(--field-border);
   border-radius: 8px;
-  padding: 14px;
-  background: var(--field-paper);
+  padding: 16px;
+  background: var(--field-panel);
+}
+.guide-panel {
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--field-panel);
+}
+.guide-panel table {
+  width: 100%;
+}
+.action-row button {
+  min-height: 42px;
 }
 button.primary {
   background: var(--field-accent) !important;
   border-color: var(--field-accent) !important;
+}
+button.primary:hover {
+  background: var(--field-accent-strong) !important;
+}
+.download-row {
+  align-items: stretch;
+}
+.result-tabs {
+  margin-top: 14px;
 }
 textarea, input {
   border-radius: 6px !important;
@@ -101,7 +145,7 @@ def _analyze_trace_impl(
     redact_secrets: bool = True,
     ignore_tool_calls: bool = True,
     report_style: str = "field_notes",
-    analysis_engine: str = "deterministic",
+    analysis_engine: str = DEFAULT_ANALYSIS_ENGINE,
     oauth_token: Optional[gr.OAuthToken] = None,
 ) -> tuple[str, dict[str, Any], str, str, str]:
     """Gradio-callable analysis endpoint."""
@@ -144,7 +188,7 @@ def analyze_trace(
     redact_secrets: bool = True,
     ignore_tool_calls: bool = True,
     report_style: str = "field_notes",
-    analysis_engine: str = "deterministic",
+    analysis_engine: str = DEFAULT_ANALYSIS_ENGINE,
     oauth_token: Optional[gr.OAuthToken] = None,
 ) -> tuple[str, dict[str, Any], str, str, str]:
     """ZeroGPU-visible Gradio endpoint."""
@@ -184,6 +228,10 @@ def write_temp_artifact(prefix: str, suffix: str, content: str) -> str:
         return handle.name
 
 
+def load_sample_trace() -> tuple[str, bool, bool, bool, str, str]:
+    return SAMPLE_TRACE_PATH, True, True, True, "field_notes", DEFAULT_ANALYSIS_ENGINE
+
+
 with gr.Blocks(
     title="Trace Field Notes",
     css=CUSTOM_CSS,
@@ -194,27 +242,29 @@ with gr.Blocks(
         font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
     ),
 ) as demo:
-    gr.Markdown(HERO_MD)
+    gr.Markdown(HERO_MD, elem_classes=["hero"])
+    gr.Markdown(PRIVACY_WARNING, elem_classes=["privacy-callout"])
 
     with gr.Row(equal_height=False):
         with gr.Column(scale=3, elem_classes=["trace-panel"]):
+            gr.Markdown("### Trace Input")
             trace_input = gr.File(
-                label="Upload Agent Session Log",
+                label="Agent session log",
                 file_types=[".jsonl", ".json", ".txt", ".log"],
                 type="filepath",
             )
             with gr.Row():
                 include_user_context = gr.Checkbox(
                     value=True,
-                    label="Include user prompts as context",
+                    label="Include user context",
                 )
                 redact_secrets = gr.Checkbox(
                     value=True,
-                    label="Redact likely secrets before analysis",
+                    label="Redact likely secrets",
                 )
             ignore_tool_calls = gr.Checkbox(
                 value=True,
-                label="Ignore tool call contents",
+                label="Ignore tool contents",
                 interactive=False,
             )
             report_style = gr.Radio(
@@ -222,13 +272,14 @@ with gr.Blocks(
                 value="field_notes",
                 label="Report style",
                 interactive=False,
+                visible=False,
             )
             analysis_engine = gr.Radio(
                 choices=[
                     (str(choice["label"]), key)
                     for key, choice in MODEL_CHOICES.items()
                 ],
-                value="deterministic",
+                value=DEFAULT_ANALYSIS_ENGINE,
                 label="Analysis engine",
             )
             with gr.Row():
@@ -241,31 +292,24 @@ with gr.Blocks(
                 "Model-assisted modes use your signed-in Hugging Face OAuth token with the `inference-api` scope. "
                 "The deterministic engine does not require sign-in."
             )
-            analyze_button = gr.Button("Analyze My Trace", variant="primary")
-        with gr.Column(scale=2):
+            with gr.Row(elem_classes=["action-row"]):
+                analyze_button = gr.Button("Analyze My Trace", variant="primary")
+                sample_button = gr.Button("Use Sample Trace", variant="secondary")
+        with gr.Column(scale=2, elem_classes=["guide-panel"]):
             gr.Markdown(SESSION_PATHS_MD)
+            with gr.Accordion("Agent-callable prompt", open=False):
+                gr.Textbox(
+                    value=AGENT_PROMPT,
+                    label="Prompt for Codex or Claude Code",
+                    lines=9,
+                    interactive=False,
+                    show_copy_button=True,
+                )
 
-    with gr.Accordion("Agent-callable prompt", open=False):
-        gr.Textbox(
-            value=AGENT_PROMPT,
-            label="Prompt for Codex or Claude Code",
-            lines=9,
-            interactive=False,
-            show_copy_button=True,
-        )
-
-    gr.Examples(
-        examples=[
-            [
-                "examples/sample_trace_redacted.jsonl",
-                True,
-                True,
-                True,
-                "field_notes",
-                "deterministic",
-            ]
-        ],
-        inputs=[
+    sample_button.click(
+        load_sample_trace,
+        inputs=None,
+        outputs=[
             trace_input,
             include_user_context,
             redact_secrets,
@@ -273,16 +317,18 @@ with gr.Blocks(
             report_style,
             analysis_engine,
         ],
-        label="Try a redacted sample trace",
     )
 
-    report_output = gr.Markdown(label="Field Report")
-    with gr.Row():
-        episode_json = gr.JSON(label="Structured Episode JSON")
-    with gr.Row():
-        redacted_download = gr.File(label="Download Redacted Narrative")
-        report_download = gr.File(label="Download Markdown Report")
-        json_download = gr.File(label="Download Structured JSON")
+    with gr.Tabs(elem_classes=["result-tabs"]):
+        with gr.Tab("Field Report"):
+            report_output = gr.Markdown(label="Field Report")
+        with gr.Tab("Episodes JSON"):
+            episode_json = gr.JSON(label="Structured Episode JSON")
+        with gr.Tab("Downloads"):
+            with gr.Row(elem_classes=["download-row"]):
+                redacted_download = gr.File(label="Redacted Narrative")
+                report_download = gr.File(label="Markdown Report")
+                json_download = gr.File(label="Structured JSON")
 
     analyze_button.click(
         analyze_trace,
