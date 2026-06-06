@@ -59,17 +59,18 @@ def build_view_model(
     """Return the frontend-ready dict for one analysis."""
 
     base = result.to_dict()
-    episodes = [_clean_episode(ep) for ep in base["episodes"]]
+    raw_episodes = base["episodes"]
+    episodes = [_clean_episode(ep) for ep in raw_episodes]
 
     view: dict[str, Any] = {
         "trace_title": base["trace_title"],
         "agent_type_guess": base["agent_type_guess"],
         "analysis_scope": base["analysis_scope"],
         "engine": base["engine"],
-        "captured": _captured(episodes),
+        "captured": _captured(raw_episodes),
         "narrative_message_count": base["narrative_message_count"],
         "redaction_count": base["redaction_count"],
-        "duration_total": _duration_total(episodes),
+        "duration_total": _duration_total(raw_episodes),
         "verdict": _verdict(episodes, base["overall_patterns"], result.model_memo),
         "overall_patterns": base["overall_patterns"],
         "privacy_notes": list(base["privacy_notes"]) + list(base.get("model_notes") or []),
@@ -89,12 +90,21 @@ def build_view_model(
 def _clean_episode(ep: dict[str, Any]) -> dict[str, Any]:
     ep = dict(ep)
     span = dict(ep.get("message_span") or {})
-    span["start_time"] = span.get("start_time") or ""
-    span["end_time"] = span.get("end_time") or ""
+    span["start_time"] = _fmt_clock(span.get("start_time"))
+    span["end_time"] = _fmt_clock(span.get("end_time"))
     span["duration_label"] = span.get("duration_label") or "unknown"
     ep["message_span"] = span
     ep["evidence_quotes"] = list(ep.get("evidence_quotes") or [])
     return ep
+
+
+def _fmt_clock(value: str | None) -> str:
+    """A bare ``HH:MM:SS`` clock for in-report episode times (date lives in `captured`)."""
+
+    parsed = parse_timestamp(value) if value else None
+    if parsed is None:
+        return value or ""
+    return parsed.strftime("%H:%M:%S")
 
 
 def _session_tone(episodes: list[dict[str, Any]]) -> str:
@@ -148,13 +158,20 @@ def _verdict(
 
 
 def _captured(episodes: list[dict[str, Any]]) -> str:
+    """A readable capture window from the first/last episode timestamps."""
+
     if not episodes:
         return "—"
-    start = episodes[0]["message_span"].get("start_time") or ""
-    end = episodes[-1]["message_span"].get("end_time") or ""
+    start = parse_timestamp(episodes[0]["message_span"].get("start_time") or "")
+    end = parse_timestamp(episodes[-1]["message_span"].get("end_time") or "")
     if start and end:
-        return f"{start} – {end}"
-    return start or end or "—"
+        if start.date() == end.date():
+            return f"{start:%Y-%m-%d} · {start:%H:%M}–{end:%H:%M} UTC"
+        return f"{start:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M} UTC"
+    if start:
+        return f"{start:%Y-%m-%d} · {start:%H:%M} UTC"
+    raw = episodes[0]["message_span"].get("start_time")
+    return raw or "—"
 
 
 def _duration_total(episodes: list[dict[str, Any]]) -> str:
