@@ -91,6 +91,14 @@ def _analyze_on_gpu(
     )
 
 
+def _file_fields(trace_file: object) -> tuple[str | None, str | None]:
+    """The file input may arrive as a FileData model or a plain FileDataDict."""
+
+    if isinstance(trace_file, dict):
+        return trace_file.get("path"), trace_file.get("orig_name")
+    return getattr(trace_file, "path", None), getattr(trace_file, "orig_name", None)
+
+
 @server.api(name="analyze_trace")
 def analyze_trace(
     trace_file: FileData,
@@ -100,7 +108,9 @@ def analyze_trace(
 ) -> dict:
     """Analyze an uploaded trace and return the frontend view model."""
 
-    path = trace_file.path
+    path, orig_name = _file_fields(trace_file)
+    if not path:
+        raise ValueError("No uploaded file was received.")
     try:
         if analysis_engine == "deterministic":
             result, narrative = analyze_trace_file(
@@ -117,9 +127,9 @@ def analyze_trace(
     except TraceParseError as exc:
         raise ValueError(str(exc)) from exc
 
-    if trace_file.orig_name:
+    if orig_name:
         agent = READABLE_AGENT.get(result.agent_type_guess, "Agent")
-        result.trace_title = f"{agent} · {trace_file.orig_name}"
+        result.trace_title = f"{agent} · {orig_name}"
 
     return build_view_model(result, narrative)
 
