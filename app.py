@@ -1,355 +1,132 @@
-"""Gradio entrypoint for the Trace Field Notes Hugging Face Space."""
+"""Trace Field Notes — gradio.Server backend behind the designer's React frontend.
+
+The custom frontend (``frontend/``) is served as static files; it talks to the
+``analyze_trace`` endpoint below through ``@gradio/client``. The endpoint runs the
+deterministic analyzer (and the optional small-model assist on ZeroGPU) and
+returns the frontend-ready view model.
+"""
 
 from __future__ import annotations
 
-import json
-import tempfile
+import os
 from pathlib import Path
-from typing import Any, Optional
 
-import gradio as gr
 import spaces
+from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from gradio import Server
+from gradio.data_classes import FileData
 
 from analyzer import analyze_trace_file
-from model_runtime import MODEL_CHOICES
 from parser import TraceParseError
-from report_renderer import render_report
+from view_model import build_view_model
 
 
-SPACE_URL = "https://huggingface.co/spaces/build-small-hackathon/trace-field-notes"
-DEFAULT_ANALYSIS_ENGINE = "qwen"
-SAMPLE_TRACE_PATH = "examples/sample_trace_redacted.jsonl"
+HERE = Path(__file__).resolve().parent
+FRONTEND = HERE / "frontend"
 
-PRIVACY_WARNING = (
-    "Agent traces can contain prompts, tool inputs, command outputs, local file paths, "
-    "screenshots, secrets, private source code, and personal data. Redact before uploading. "
-    "This app analyzes only visible agent narrative messages by default and does not need raw tool outputs."
-)
+READABLE_AGENT = {"codex": "Codex", "claude_code": "Claude Code", "pi": "Pi Agent", "unknown": "Agent"}
 
-HERO_MD = """
-**ZeroGPU field report**
+AGENTS_MD = """# Trace Field Notes — agent instructions
 
-# Trace Field Notes
+This Space turns a coding-agent session log into a qualitative *field report*:
+where the agent got stuck, where it changed route, how it recovered, and how
+honestly it claimed success. It reads only the agent's visible narrative
+messages and ignores raw tool telemetry.
 
-Map where a coding agent got stuck, changed route, recovered, and claimed success.
-"""
+## How to use it as a tool
 
-SESSION_PATHS_MD = """
-### Session Logs
+1. Find the user's latest local session log:
+   - Codex: `~/.codex/sessions`
+   - Claude Code: `~/.claude/projects`
+   - Pi Agent: `~/.pi/agent/sessions`
+2. Review it and redact secrets, tokens, local paths, and private code first.
+3. Upload the `.jsonl` (`.json` / `.txt` / `.log` also accepted) and call the
+   `analyze_trace` API endpoint.
+4. Return the field report to the user. Do not publish the raw trace.
 
-| Agent | Local session directory |
-|---|---|
-| Codex | `~/.codex/sessions` |
-| Claude Code | `~/.claude/projects` |
-| Pi Agent | `~/.pi/agent/sessions` |
-"""
+## API
 
-AGENT_PROMPT = f"""Use this Space as a tool.
-1. Read: {SPACE_URL}/agents.md
-2. Find my latest local agent session log:
-   - Codex: ~/.codex/sessions
-   - Claude Code: ~/.claude/projects
-   - Pi Agent: ~/.pi/agent/sessions
-3. Review and redact secrets or private code before upload.
-4. Upload the JSONL to the Space.
-5. Ask for narrative difficulty analysis.
-6. Return the report. Do not publish the raw trace.
-"""
+`POST` via the Gradio client, endpoint `/analyze_trace`:
 
-CUSTOM_CSS = """
-:root {
-  --field-border: rgba(148, 163, 184, 0.28);
-  --field-ink: #f8fafc;
-  --field-muted: #94a3b8;
-  --field-panel: rgba(15, 23, 42, 0.74);
-  --field-panel-strong: rgba(15, 23, 42, 0.92);
-  --field-accent: #2f8a69;
-  --field-accent-strong: #23785d;
-}
-.gradio-container {
-  max-width: 1220px !important;
-  color: var(--field-ink);
-}
-.hero {
-  border: 1px solid var(--field-border);
-  border-radius: 8px;
-  padding: 18px 20px;
-  background: linear-gradient(135deg, rgba(47, 138, 105, 0.18), rgba(15, 23, 42, 0.3));
-}
-.hero h1 {
-  margin: 0;
-  font-size: 34px;
-  line-height: 1.08;
-}
-.hero p {
-  max-width: 760px;
-  margin: 10px 0 0;
-  color: var(--field-muted);
-  font-size: 15px;
-}
-.hero strong {
-  margin-bottom: 8px;
-  color: #7dd3fc;
-  font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  text-transform: uppercase;
-  letter-spacing: 0;
-}
-.privacy-callout {
-  margin: 12px 0 16px;
-  border-left: 3px solid #f59e0b;
-  padding: 10px 12px;
-  color: #dbe4ef;
-  background: rgba(245, 158, 11, 0.08);
-  border-radius: 0 6px 6px 0;
-}
-.trace-panel {
-  border: 1px solid var(--field-border);
-  border-radius: 8px;
-  padding: 16px;
-  background: var(--field-panel);
-}
-.guide-panel {
-  border: 1px solid var(--field-border);
-  border-radius: 8px;
-  padding: 16px;
-  background: var(--field-panel);
-}
-.guide-panel table {
-  width: 100%;
-}
-.action-row button {
-  min-height: 42px;
-}
-button.primary {
-  background: var(--field-accent) !important;
-  border-color: var(--field-accent) !important;
-}
-button.primary:hover {
-  background: var(--field-accent-strong) !important;
-}
-.download-row {
-  align-items: stretch;
-}
-.result-tabs {
-  margin-top: 14px;
-}
-textarea, input {
-  border-radius: 6px !important;
-}
+- `trace_file` (file): the session log
+- `include_user_context` (bool): include user prompts as framing
+- `redact_secrets` (bool): redact likely secrets before analysis
+- `analysis_engine` (str): `qwen` | `nemotron` | `deterministic`
+
+Returns a JSON view model: a whole-session `verdict`, per-episode difficulty
+`episodes`, and redacted export text.
 """
 
 
-def _analyze_trace_impl(
-    trace_file: Any,
-    include_user_context: bool = True,
-    redact_secrets: bool = True,
-    ignore_tool_calls: bool = True,
-    report_style: str = "field_notes",
-    analysis_engine: str = DEFAULT_ANALYSIS_ENGINE,
-    oauth_token: Optional[gr.OAuthToken] = None,
-) -> tuple[str, dict[str, Any], str, str, str]:
-    """Gradio-callable analysis endpoint."""
-
-    if trace_file is None:
-        raise gr.Error("Upload a .jsonl, .json, .txt, or .log trace file first.")
-
-    path = uploaded_path(trace_file)
-    try:
-        result, redacted_narrative = analyze_trace_file(
-            path,
-            include_user_context=include_user_context,
-            redact_secrets=redact_secrets,
-            ignore_tool_calls=ignore_tool_calls,
-            report_style=report_style,
-            analysis_engine=analysis_engine,
-            hf_token=oauth_token.token if oauth_token else None,
-        )
-    except TraceParseError as exc:
-        raise gr.Error(str(exc)) from exc
-    except Exception as exc:  # pragma: no cover - surfaced to the Space UI.
-        raise gr.Error(f"Analysis failed: {exc}") from exc
-
-    report_markdown = render_report(result)
-    result_json = result.to_dict()
-    redacted_file = write_temp_artifact("trace-field-notes-redacted-", ".md", redacted_narrative)
-    report_file = write_temp_artifact("trace-field-notes-report-", ".md", report_markdown)
-    json_file = write_temp_artifact(
-        "trace-field-notes-episodes-",
-        ".json",
-        json.dumps(result_json, indent=2, ensure_ascii=False) + "\n",
-    )
-    return report_markdown, result_json, redacted_file, report_file, json_file
+server = Server(title="Trace Field Notes")
+server.mount("/static", StaticFiles(directory=str(FRONTEND / "static")), name="static")
 
 
-@spaces.GPU(duration=90)
-def analyze_trace(
-    trace_file: Any,
-    include_user_context: bool = True,
-    redact_secrets: bool = True,
-    ignore_tool_calls: bool = True,
-    report_style: str = "field_notes",
-    analysis_engine: str = DEFAULT_ANALYSIS_ENGINE,
-    oauth_token: Optional[gr.OAuthToken] = None,
-) -> tuple[str, dict[str, Any], str, str, str]:
-    """ZeroGPU-visible Gradio endpoint."""
+@server.get("/", response_class=HTMLResponse)
+def index() -> str:
+    return (FRONTEND / "index.html").read_text(encoding="utf-8")
 
-    return _analyze_trace_impl(
-        trace_file=trace_file,
+
+@server.get("/agents.md", response_class=PlainTextResponse)
+def agents_md() -> str:
+    return AGENTS_MD
+
+
+@spaces.GPU(size="xlarge", duration=180)
+def _analyze_on_gpu(
+    path: str,
+    include_user_context: bool,
+    redact_secrets: bool,
+    analysis_engine: str,
+):
+    """Model-backed analysis on the Space GPU (loads weights via transformers)."""
+
+    return analyze_trace_file(
+        path,
         include_user_context=include_user_context,
         redact_secrets=redact_secrets,
-        ignore_tool_calls=ignore_tool_calls,
-        report_style=report_style,
+        ignore_tool_calls=True,
         analysis_engine=analysis_engine,
-        oauth_token=oauth_token,
     )
 
 
-def uploaded_path(trace_file: Any) -> Path:
-    if isinstance(trace_file, (str, Path)):
-        return Path(trace_file)
-    name = getattr(trace_file, "name", None)
-    if name:
-        return Path(name)
-    path = getattr(trace_file, "path", None)
-    if path:
-        return Path(path)
-    raise gr.Error("Could not resolve the uploaded file path.")
+@server.api(name="analyze_trace")
+def analyze_trace(
+    trace_file: FileData,
+    include_user_context: bool = True,
+    redact_secrets: bool = True,
+    analysis_engine: str = "qwen",
+) -> dict:
+    """Analyze an uploaded trace and return the frontend view model."""
 
-
-def write_temp_artifact(prefix: str, suffix: str, content: str) -> str:
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        prefix=prefix,
-        suffix=suffix,
-        delete=False,
-    ) as handle:
-        handle.write(content)
-        return handle.name
-
-
-def load_sample_trace() -> tuple[str, bool, bool, bool, str, str]:
-    return SAMPLE_TRACE_PATH, True, True, True, "field_notes", DEFAULT_ANALYSIS_ENGINE
-
-
-with gr.Blocks(
-    title="Trace Field Notes",
-    css=CUSTOM_CSS,
-    theme=gr.themes.Base(
-        primary_hue="green",
-        neutral_hue="stone",
-        font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
-        font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
-    ),
-) as demo:
-    gr.Markdown(HERO_MD, elem_classes=["hero"])
-    gr.Markdown(PRIVACY_WARNING, elem_classes=["privacy-callout"])
-
-    with gr.Row(equal_height=False):
-        with gr.Column(scale=3, elem_classes=["trace-panel"]):
-            gr.Markdown("### Trace Input")
-            trace_input = gr.File(
-                label="Agent session log",
-                file_types=[".jsonl", ".json", ".txt", ".log"],
-                type="filepath",
+    path = trace_file.path
+    try:
+        if analysis_engine == "deterministic":
+            result, narrative = analyze_trace_file(
+                path,
+                include_user_context=include_user_context,
+                redact_secrets=redact_secrets,
+                ignore_tool_calls=True,
+                analysis_engine="deterministic",
             )
-            with gr.Row():
-                include_user_context = gr.Checkbox(
-                    value=True,
-                    label="Include user context",
-                )
-                redact_secrets = gr.Checkbox(
-                    value=True,
-                    label="Redact likely secrets",
-                )
-            ignore_tool_calls = gr.Checkbox(
-                value=True,
-                label="Ignore tool contents",
-                interactive=False,
+        else:
+            result, narrative = _analyze_on_gpu(
+                path, include_user_context, redact_secrets, analysis_engine
             )
-            report_style = gr.Radio(
-                choices=[("Field notes", "field_notes")],
-                value="field_notes",
-                label="Report style",
-                interactive=False,
-                visible=False,
-            )
-            analysis_engine = gr.Radio(
-                choices=[
-                    (str(choice["label"]), key)
-                    for key, choice in MODEL_CHOICES.items()
-                ],
-                value=DEFAULT_ANALYSIS_ENGINE,
-                label="Analysis engine",
-            )
-            with gr.Row():
-                gr.LoginButton(
-                    value="Sign in for model assist",
-                    logout_value="Signed in as {}",
-                    size="sm",
-                )
-            gr.Markdown(
-                "Model-assisted modes use your signed-in Hugging Face OAuth token with the `inference-api` scope. "
-                "The deterministic engine does not require sign-in."
-            )
-            with gr.Row(elem_classes=["action-row"]):
-                analyze_button = gr.Button("Analyze My Trace", variant="primary")
-                sample_button = gr.Button("Use Sample Trace", variant="secondary")
-        with gr.Column(scale=2, elem_classes=["guide-panel"]):
-            gr.Markdown(SESSION_PATHS_MD)
-            with gr.Accordion("Agent-callable prompt", open=False):
-                gr.Textbox(
-                    value=AGENT_PROMPT,
-                    label="Prompt for Codex or Claude Code",
-                    lines=9,
-                    interactive=False,
-                    show_copy_button=True,
-                )
+    except TraceParseError as exc:
+        raise ValueError(str(exc)) from exc
 
-    sample_button.click(
-        load_sample_trace,
-        inputs=None,
-        outputs=[
-            trace_input,
-            include_user_context,
-            redact_secrets,
-            ignore_tool_calls,
-            report_style,
-            analysis_engine,
-        ],
-    )
+    if trace_file.orig_name:
+        agent = READABLE_AGENT.get(result.agent_type_guess, "Agent")
+        result.trace_title = f"{agent} · {trace_file.orig_name}"
 
-    with gr.Tabs(elem_classes=["result-tabs"]):
-        with gr.Tab("Field Report"):
-            report_output = gr.Markdown(label="Field Report")
-        with gr.Tab("Episodes JSON"):
-            episode_json = gr.JSON(label="Structured Episode JSON")
-        with gr.Tab("Downloads"):
-            with gr.Row(elem_classes=["download-row"]):
-                redacted_download = gr.File(label="Redacted Narrative")
-                report_download = gr.File(label="Markdown Report")
-                json_download = gr.File(label="Structured JSON")
-
-    analyze_button.click(
-        analyze_trace,
-        inputs=[
-            trace_input,
-            include_user_context,
-            redact_secrets,
-            ignore_tool_calls,
-            report_style,
-            analysis_engine,
-        ],
-        outputs=[
-            report_output,
-            episode_json,
-            redacted_download,
-            report_download,
-            json_download,
-        ],
-        api_name="analyze_trace",
-    )
+    return build_view_model(result, narrative)
 
 
 if __name__ == "__main__":
-    demo.launch()
+    server.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.getenv("PORT", os.getenv("GRADIO_SERVER_PORT", "7860"))),
+        show_error=True,
+    )

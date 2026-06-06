@@ -1,3 +1,7 @@
-gradio[oauth]>=5.50,<6.0
+gradio>=6.16,<7
 huggingface_hub>=0.30
 spaces>=0.50
+torch>=2.4
+transformers>=4.57
+accelerate>=1.0
+einops>=0.8

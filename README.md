@@ -3,14 +3,10 @@ title: Trace Field Notes
 colorFrom: green
 colorTo: gray
 sdk: gradio
-sdk_version: 5.50.0
+sdk_version: 6.16.0
 app_file: app.py
 pinned: false
 license: mit
-hf_oauth: true
-hf_oauth_scopes:
-  - inference-api
-hf_oauth_expiration_minutes: 480
 ---
 
 # Trace Field Notes
@@ -22,11 +18,27 @@ telemetry by default and analyzes only the agent's visible narrative messages:
 what it planned, where it got stuck, how it detoured, how it recovered, and how
 it claimed completion.
 
-Built for the Build Small Hackathon as a Gradio app. The default engine is the
-quick Qwen3.5 9B model-assisted path on ZeroGPU, with a verified deterministic
-codebook analyzer as the always-available recovery path. The app also exposes
-`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` through Hugging Face Inference
-Providers when the user signs in with Hugging Face OAuth.
+Built for the Build Small Hackathon. The frontend is a custom React field-notebook
+UI (a trail map of the session) served by `gradio.Server`; it calls the Python
+`analyze_trace` endpoint through `@gradio/client`. Both models run on the Space
+GPU through ZeroGPU: a quick `Qwen/Qwen3.5-9B` pass by default, and the larger
+`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` for deeper analysis. A verified
+deterministic codebook analyzer is the always-available recovery path and needs
+no model or GPU.
+
+## Architecture
+
+- `app.py` — a `gradio.Server` (FastAPI) app. It serves `frontend/index.html`,
+  mounts `frontend/static/`, exposes `@server.api("analyze_trace")` (queued, with
+  `gradio_client` compatibility), and an `/agents.md` instructions endpoint.
+- `frontend/` — the designer's React app (in-browser Babel, no build step):
+  `field_report.css` (the design system), `data.js` (codebook + tone labels),
+  `components.jsx` (atoms + trail map + report sections), `app.jsx` (shell +
+  upload, wired to the backend).
+- `view_model.py` — adapts an `AnalysisResult` into the JSON shape the frontend
+  renders (synthesizes the whole-session `verdict`, `captured`, `duration_total`).
+- `analyzer.py` / `parser.py` / `redaction.py` / `schemas.py` — the deterministic
+  pipeline. `model_runtime.py` — the optional small-model assist on ZeroGPU.
 
 ## Run Locally
 
@@ -45,18 +57,20 @@ python3.11 -m unittest discover -s tests
 
 ## Analysis Engines
 
-- `Quick small-model assist: Qwen3.5 9B`: default model-assisted memo.
-- `NVIDIA Nemotron 3 Nano 30B-A3B assist`: uses Nemotron through the signed-in
-  user's `inference-api` OAuth scope.
-- `Deterministic field notes`: local, no model dependency.
+- `Qwen3.5 9B — quick analysis`: default model pass on the Space GPU.
+- `NVIDIA Nemotron 3 Nano 30B-A3B — deeper analysis`: the larger model on the
+  Space GPU for a richer memo.
+- `Rule-based — instant, no model`: local codebook analyzer, no model or GPU.
 
-If a selected model is unavailable or the user is not signed in, the report
-records the reason in model notes and returns the deterministic analysis instead
-of failing the whole Space.
+If a model fails to load or returns invalid JSON, the report records the reason
+in model notes and returns the deterministic analysis instead of failing the
+whole Space.
 
-The Gradio endpoint is decorated with `@spaces.GPU` so the app can run on
-Hugging Face ZeroGPU hardware. The deterministic path still works without model
-weights; ZeroGPU only supplies the runtime contract and queueing surface.
+The model-backed analysis runs under `@spaces.GPU(size="xlarge")` so the weights
+load on Hugging Face ZeroGPU hardware; `Qwen/Qwen3.5-9B` and
+`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` are loaded with `transformers` and
+cached across requests. The rule-based engine runs on CPU and never requests a
+GPU slot, so it returns instantly.
 
 ## Agent Session Locations
 

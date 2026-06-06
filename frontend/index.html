@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trace Field Notes</title>
+  <meta name="description" content="Turn a coding-agent session log into a qualitative field report: where it got stuck, detoured, recovered, and how honestly it claimed success." />
+  <link rel="stylesheet" href="/static/field_report.css" />
+
+  <!-- React + Babel (in-browser JSX, matching the prototype) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Gradio JS client → talks to the Python @app.api endpoints -->
+  <script type="module">
+    import { Client, handle_file } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+    window.__gradio = { Client, handle_file, clientPromise: Client.connect(window.location.origin) };
+  </script>
+</head>
+<body>
+  <div id="root" class="app-root" data-theme="dark"></div>
+
+  <!-- codebook labels + tone metadata + offline samples (window.TFN) -->
+  <script src="/static/data.js"></script>
+  <!-- shared atoms + trail map + report sections (verbatim from the design) -->
+  <script type="text/babel" data-presets="react" src="/static/components.jsx"></script>
+  <!-- shell + landing, wired to the backend -->
+  <script type="text/babel" data-presets="react" src="/static/app.jsx"></script>
+</body>
+</html>
