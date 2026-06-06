@@ -92,7 +92,6 @@ function LandingView({ onAnalyze, onSample, error }) {
       <TopBar />
 
       <section className="hero">
-        <Kicker>Field report · qualitative, not a leaderboard</Kicker>
         <h1 className="hero__title">See how your coding agent<br /> got stuck, detoured, recovered<span className="hero__amp"> &amp; </span>claimed success.</h1>
         <p className="hero__sub">
           Upload a Codex, Claude Code, or Pi Agent session log. Trace Field Notes reads only the agent's
@@ -236,12 +235,7 @@ const PIPELINE = [
   "Synthesizing field notes",
 ];
 
-function Analyzing({ label }) {
-  const [step, setStep] = React.useState(0);
-  React.useEffect(() => {
-    const id = setInterval(() => setStep((s) => (s + 1) % (PIPELINE.length + 1)), 700);
-    return () => clearInterval(id);
-  }, []);
+function Analyzing({ label, step }) {
   return (
     <div className="analyzing">
       <div className="analyzing__card card card--raised">
@@ -291,25 +285,40 @@ function App() {
   const [data, setData] = React.useState(null);
   const [engineLabel, setEngineLabel] = React.useState("");
   const [error, setError] = React.useState("");
+  const [step, setStep] = React.useState(0);
 
   async function analyze({ file, include_user_context, redact_secrets, analysis_engine, engineLabel }) {
     setError("");
     setEngineLabel(engineLabel || analysis_engine);
+    setStep(0);
     setStage("analyzing");
     window.scrollTo({ top: 0 });
     try {
       const g = window.__gradio;
       if (!g) throw new Error("Client is still loading — reload the page and try again.");
       const client = await g.clientPromise;
-      const res = await client.predict("/analyze_trace", {
+      const sub = client.submit("/analyze_trace", {
         trace_file: g.handle_file(file),
         include_user_context: !!include_user_context,
         redact_secrets: !!redact_secrets,
         analysis_engine,
       });
-      const out = Array.isArray(res.data) ? res.data[0] : res.data;
-      if (!out || typeof out !== "object") throw new Error("The analyzer returned an empty response.");
-      setData(out);
+      let result = null;
+      for await (const msg of sub) {
+        if (msg.type === "data") {
+          const p = Array.isArray(msg.data) ? msg.data[0] : msg.data;
+          if (p && typeof p === "object") {
+            if (typeof p.step === "number") setStep(p.step);
+            if (p.result) result = p.result;
+          }
+        } else if (msg.type === "status") {
+          if (msg.stage === "error") throw new Error(msg.message || "The analyzer failed on the server.");
+          if (msg.stage === "generating") setStep((s) => (s < 1 ? 1 : s));
+        }
+      }
+      if (!result || typeof result !== "object") throw new Error("The analyzer returned no result.");
+      setStep(PIPELINE.length);
+      setData(result);
       setStage("report");
     } catch (e) {
       setError(String((e && e.message) || e));
@@ -337,7 +346,7 @@ function App() {
       <div className="backdrop"><div className="grain" /><TopoBackground /></div>
       <div className="page">
         {stage === "landing" && <LandingView onAnalyze={analyze} onSample={loadSample} error={error} />}
-        {stage === "analyzing" && <Analyzing label={engineLabel} />}
+        {stage === "analyzing" && <Analyzing label={engineLabel} step={step} />}
         {stage === "report" && (
           <div className="report-wrap">
             <button className="report-back btn btn--sm btn--ghost" onClick={reset}>← New trace</button>

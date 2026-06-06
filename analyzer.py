@@ -111,22 +111,29 @@ OUTCOME_SIGNALS = {
 }
 
 
-def analyze_trace_file(
+ANALYSIS_STEPS = ("extract", "redact", "chart", "classify", "synthesize")
+
+
+def stream_deterministic_analysis(
     path: str | Path,
     *,
     include_user_context: bool = True,
     redact_secrets: bool = True,
     ignore_tool_calls: bool = True,
-    report_style: str = "field_notes",
-    analysis_engine: str = "deterministic",
-) -> tuple[AnalysisResult, str]:
-    """Parse, optionally redact, and analyze an uploaded trace file."""
+):
+    """Run the deterministic pipeline as a generator.
+
+    Yields ``("step", name)`` after each real stage completes (the names in
+    :data:`ANALYSIS_STEPS`), then a final ``("result", (AnalysisResult, str))``.
+    Callers that don't care about progress can just drain it for the tuple.
+    """
 
     parsed_messages, agent_type = parse_trace(
         path,
         include_user_context=include_user_context,
         ignore_tool_calls=ignore_tool_calls,
     )
+    yield ("step", "extract")
 
     redaction_count = 0
     privacy_notes = [
@@ -141,16 +148,16 @@ def analyze_trace_file(
         redacted_messages: list[NarrativeMessage] = []
         all_notes: Counter[str] = Counter()
         for message in parsed_messages:
-            result = redact_text(message.text)
-            redaction_count += result.count
-            for note in result.notes:
+            red = redact_text(message.text)
+            redaction_count += red.count
+            for note in red.notes:
                 label, _, count = note.partition(": ")
                 all_notes[label] += int(count or 0)
             redacted_messages.append(
                 NarrativeMessage(
                     index=message.index,
                     role=message.role,
-                    text=result.text,
+                    text=red.text,
                     timestamp=message.timestamp,
                     source=message.source,
                 )
@@ -166,8 +173,11 @@ def analyze_trace_file(
             privacy_notes.append("No likely secrets matched the built-in redaction patterns.")
     else:
         privacy_notes.append("Secret redaction was disabled by the user.")
+    yield ("step", "redact")
 
     episodes = identify_episodes(messages)
+    yield ("step", "chart")
+
     result = AnalysisResult(
         trace_title=derive_trace_title(path, agent_type),
         agent_type_guess=agent_type,
@@ -179,32 +189,80 @@ def analyze_trace_file(
         redaction_count=redaction_count,
         engine="deterministic-codebook",
     )
+    yield ("step", "classify")
+
     narrative_text = render_redacted_narrative(messages)
+    yield ("step", "synthesize")
 
-    if analysis_engine != "deterministic":
-        if analysis_engine not in MODEL_CHOICES:
-            result.model_notes.append(
-                f"Unknown analysis engine {analysis_engine!r}; deterministic analysis was returned."
-            )
-        else:
-            try:
-                assist = run_model_assist(
-                    engine=analysis_engine,
-                    result=result,
-                    narrative_text=narrative_text,
-                )
-            except Exception as exc:
-                error_message = str(exc).strip().rstrip(".")
-                result.model_notes.append(
-                    "Model assist was requested but unavailable: "
-                    f"{type(exc).__name__}: {error_message}. "
-                    "Deterministic analysis was returned."
-                )
-            else:
-                result.engine = f"deterministic-codebook + {assist.model_id}"
-                result.model_memo = assist.memo
-                result.model_notes.append(assist.note)
+    yield ("result", (result, narrative_text))
 
+
+def apply_model_assist(
+    result: AnalysisResult,
+    narrative_text: str,
+    analysis_engine: str,
+    *,
+    run=None,
+) -> None:
+    """Augment a deterministic result with model assist, with graceful fallback.
+
+    ``run`` defaults to the module-level :func:`run_model_assist` (resolved at
+    call time so tests can monkeypatch it); the Server passes a GPU-wrapped
+    runner so model inference happens inside a ``@spaces.GPU`` allocation. The
+    result is mutated in place; any failure leaves the deterministic result and
+    records the reason in ``model_notes``.
+    """
+
+    if analysis_engine == "deterministic":
+        return
+    if analysis_engine not in MODEL_CHOICES:
+        result.model_notes.append(
+            f"Unknown analysis engine {analysis_engine!r}; deterministic analysis was returned."
+        )
+        return
+    runner = run or run_model_assist
+    try:
+        assist = runner(
+            engine=analysis_engine,
+            result=result,
+            narrative_text=narrative_text,
+        )
+    except Exception as exc:
+        error_message = str(exc).strip().rstrip(".")
+        result.model_notes.append(
+            "Model assist was requested but unavailable: "
+            f"{type(exc).__name__}: {error_message}. "
+            "Deterministic analysis was returned."
+        )
+    else:
+        result.engine = f"deterministic-codebook + {assist.model_id}"
+        result.model_memo = assist.memo
+        result.model_notes.append(assist.note)
+
+
+def analyze_trace_file(
+    path: str | Path,
+    *,
+    include_user_context: bool = True,
+    redact_secrets: bool = True,
+    ignore_tool_calls: bool = True,
+    report_style: str = "field_notes",
+    analysis_engine: str = "deterministic",
+) -> tuple[AnalysisResult, str]:
+    """Parse, optionally redact, and analyze an uploaded trace file."""
+
+    result: AnalysisResult | None = None
+    narrative_text = ""
+    for kind, payload in stream_deterministic_analysis(
+        path,
+        include_user_context=include_user_context,
+        redact_secrets=redact_secrets,
+        ignore_tool_calls=ignore_tool_calls,
+    ):
+        if kind == "result":
+            result, narrative_text = payload
+    assert result is not None
+    apply_model_assist(result, narrative_text, analysis_engine)
     return result, narrative_text
 
 

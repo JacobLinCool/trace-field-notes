@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from gradio import Server
 from gradio.data_classes import FileData
 
-from analyzer import analyze_trace_file
+from analyzer import apply_model_assist, stream_deterministic_analysis
 from parser import TraceParseError
 from view_model import build_view_model
 
@@ -74,21 +74,17 @@ def agents_md() -> str:
 
 
 @spaces.GPU(size="xlarge", duration=180)
-def _analyze_on_gpu(
-    path: str,
-    include_user_context: bool,
-    redact_secrets: bool,
-    analysis_engine: str,
-):
-    """Model-backed analysis on the Space GPU (loads weights via transformers)."""
+def _model_assist_gpu(*, engine, result, narrative_text):
+    """Run the small-model assist inside a ZeroGPU allocation."""
 
-    return analyze_trace_file(
-        path,
-        include_user_context=include_user_context,
-        redact_secrets=redact_secrets,
-        ignore_tool_calls=True,
-        analysis_engine=analysis_engine,
-    )
+    from model_runtime import run_model_assist
+
+    return run_model_assist(engine=engine, result=result, narrative_text=narrative_text)
+
+
+# completed-step count for the frontend's 6-item checklist
+# (item 0 "uploading" is done once the request reaches us).
+_STEP_COUNT = {"extract": 2, "redact": 3, "chart": 4, "classify": 5, "synthesize": 5}
 
 
 def _file_fields(trace_file: object) -> tuple[str | None, str | None]:
@@ -106,32 +102,40 @@ def analyze_trace(
     redact_secrets: bool = True,
     analysis_engine: str = "qwen",
 ) -> dict:
-    """Analyze an uploaded trace and return the frontend view model."""
+    """Stream real progress, then the frontend view model, for one trace.
+
+    Yields ``{"step": n}`` after each real pipeline stage (so the UI checklist
+    tracks actual work), then a final ``{"step": 6, "result": <view model>}``.
+    """
 
     path, orig_name = _file_fields(trace_file)
     if not path:
         raise ValueError("No uploaded file was received.")
+
+    result = None
+    narrative = ""
     try:
-        if analysis_engine == "deterministic":
-            result, narrative = analyze_trace_file(
-                path,
-                include_user_context=include_user_context,
-                redact_secrets=redact_secrets,
-                ignore_tool_calls=True,
-                analysis_engine="deterministic",
-            )
-        else:
-            result, narrative = _analyze_on_gpu(
-                path, include_user_context, redact_secrets, analysis_engine
-            )
+        for kind, payload in stream_deterministic_analysis(
+            path,
+            include_user_context=include_user_context,
+            redact_secrets=redact_secrets,
+            ignore_tool_calls=True,
+        ):
+            if kind == "step":
+                yield {"step": _STEP_COUNT[payload]}
+            elif kind == "result":
+                result, narrative = payload
     except TraceParseError as exc:
         raise ValueError(str(exc)) from exc
+
+    if analysis_engine != "deterministic":
+        apply_model_assist(result, narrative, analysis_engine, run=_model_assist_gpu)
 
     if orig_name:
         agent = READABLE_AGENT.get(result.agent_type_guess, "Agent")
         result.trace_title = f"{agent} · {orig_name}"
 
-    return build_view_model(result, narrative)
+    yield {"step": 6, "result": build_view_model(result, narrative)}
 
 
 if __name__ == "__main__":

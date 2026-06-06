@@ -277,7 +277,7 @@ a { color: var(--accent); }
 .hero__amp { color: var(--accent); font-style: italic; font-weight: 500; }
 .hero__sub {
   font-family: var(--font-serif); font-size: clamp(16px, 1.7vw, 19px); line-height: 1.55;
-  color: var(--ink-2); max-width: 64ch; margin: 18px 0 0;
+  color: var(--ink-2); margin: 18px 0 0;
 }
 .hero__sub em { color: var(--accent); font-style: italic; }
 
@@ -313,7 +313,7 @@ a { color: var(--accent); }
   font-family: var(--font-serif); font-weight: 600; letter-spacing: -0.015em;
   font-size: clamp(20px, 2.4vw, 27px); line-height: 1.12; margin: 8px 0 0;
 }
-.sec-head__sub { font-size: 14.5px; line-height: 1.5; color: var(--ink-2); margin: 9px 0 0; max-width: 60ch; }
+.sec-head__sub { font-size: 14.5px; line-height: 1.5; color: var(--ink-2); margin: 9px 0 0; }
 
 /* dropzone */
 .drop {
