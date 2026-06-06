@@ -18,9 +18,11 @@ telemetry by default and analyzes only the agent's visible narrative messages:
 what it planned, where it got stuck, how it detoured, how it recovered, and how
 it claimed completion.
 
-Built for the Build Small Hackathon as a Gradio app. The stable MVP uses a
+Built for the Build Small Hackathon as a Gradio app. The default engine uses a
 verified deterministic codebook analyzer so the Space can always start and
-produce a report; the analysis schema is model-ready for small-model assistance.
+produce a report. The app also exposes explicit small-model assist modes for
+`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` and `Qwen/Qwen3.5-9B` through
+Hugging Face Inference Providers when the runtime has provider access.
 
 ## Run Locally
 
@@ -36,6 +38,18 @@ python app.py
 ```bash
 python3.11 -m unittest discover -s tests
 ```
+
+## Analysis Engines
+
+- `Deterministic field notes`: default, local, no model dependency.
+- `Small-model assist: NVIDIA Nemotron 3 Nano 30B-A3B`: uses the hackathon-sized
+  30B total-parameter Nemotron model when Hugging Face Inference Providers can
+  serve it.
+- `Quick small-model assist: Qwen3.5 9B`: optional lower-latency model-assisted
+  memo.
+
+If a selected model is unavailable, the report records the error in model notes
+and returns the deterministic analysis instead of failing the whole Space.
 
 ## Agent Session Locations
 

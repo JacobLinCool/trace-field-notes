@@ -26,6 +26,7 @@ def render_report(result: AnalysisResult) -> str:
     sections = [
         render_header(result),
         render_executive_summary(result),
+        render_model_memo(result),
         render_timeline(result.episodes),
         render_difficulty_map(result.episodes),
         render_detour_analysis(result.episodes),
@@ -69,6 +70,25 @@ def render_executive_summary(result: AnalysisResult) -> str:
         "The report describes what the agent visibly reported and claimed; it does not verify whether the code or "
         "final artifact is correct."
     )
+
+
+def render_model_memo(result: AnalysisResult) -> str:
+    if not result.model_memo and not result.model_notes:
+        return ""
+
+    lines = ["## Small-Model Memo"]
+    if result.model_memo:
+        lines.append(result.model_memo.get("executive_memo", ""))
+        lines.append(f"**Detours:** {result.model_memo.get('detour_memo', '')}")
+        lines.append(f"**Outcome audit:** {result.model_memo.get('outcome_audit_memo', '')}")
+        caveats = result.model_memo.get("caveats") or []
+        if caveats:
+            lines.append("**Model caveats:**")
+            lines.extend(f"- {caveat}" for caveat in caveats)
+    if result.model_notes:
+        lines.append("**Model notes:**")
+        lines.extend(f"- {note}" for note in result.model_notes)
+    return "\n\n".join(line for line in lines if line)
 
 
 def render_timeline(episodes: list[DifficultyEpisode]) -> str:

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from model_runtime import MODEL_CHOICES, run_model_assist
 from parser import parse_trace
 from redaction import redact_text
 from schemas import AnalysisResult, DifficultyEpisode, MessageSpan, NarrativeMessage
@@ -117,6 +118,7 @@ def analyze_trace_file(
     redact_secrets: bool = True,
     ignore_tool_calls: bool = True,
     report_style: str = "field_notes",
+    analysis_engine: str = "deterministic",
 ) -> tuple[AnalysisResult, str]:
     """Parse, optionally redact, and analyze an uploaded trace file."""
 
@@ -178,6 +180,29 @@ def analyze_trace_file(
         engine="deterministic-codebook",
     )
     narrative_text = render_redacted_narrative(messages)
+
+    if analysis_engine != "deterministic":
+        if analysis_engine not in MODEL_CHOICES:
+            result.model_notes.append(
+                f"Unknown analysis engine {analysis_engine!r}; deterministic analysis was returned."
+            )
+        else:
+            try:
+                assist = run_model_assist(
+                    engine=analysis_engine,
+                    result=result,
+                    narrative_text=narrative_text,
+                )
+            except Exception as exc:
+                result.model_notes.append(
+                    "Small-model assist was requested but unavailable: "
+                    f"{type(exc).__name__}: {exc}. Deterministic analysis was returned."
+                )
+            else:
+                result.engine = f"deterministic-codebook + {assist.model_id}"
+                result.model_memo = assist.memo
+                result.model_notes.append(assist.note)
+
     return result, narrative_text
 
 

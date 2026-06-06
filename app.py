@@ -10,6 +10,7 @@ from typing import Any
 import gradio as gr
 
 from analyzer import analyze_trace_file
+from model_runtime import MODEL_CHOICES
 from parser import TraceParseError
 from report_renderer import render_report
 
@@ -99,6 +100,7 @@ def analyze_trace(
     redact_secrets: bool = True,
     ignore_tool_calls: bool = True,
     report_style: str = "field_notes",
+    analysis_engine: str = "deterministic",
 ) -> tuple[str, dict[str, Any], str, str, str]:
     """Gradio-callable analysis endpoint."""
 
@@ -113,6 +115,7 @@ def analyze_trace(
             redact_secrets=redact_secrets,
             ignore_tool_calls=ignore_tool_calls,
             report_style=report_style,
+            analysis_engine=analysis_engine,
         )
     except TraceParseError as exc:
         raise gr.Error(str(exc)) from exc
@@ -194,6 +197,14 @@ with gr.Blocks(
                 label="Report style",
                 interactive=False,
             )
+            analysis_engine = gr.Radio(
+                choices=[
+                    (str(choice["label"]), key)
+                    for key, choice in MODEL_CHOICES.items()
+                ],
+                value="deterministic",
+                label="Analysis engine",
+            )
             analyze_button = gr.Button("Analyze My Trace", variant="primary")
         with gr.Column(scale=2):
             gr.Markdown(SESSION_PATHS_MD)
@@ -208,8 +219,24 @@ with gr.Blocks(
         )
 
     gr.Examples(
-        examples=[["examples/sample_trace_redacted.jsonl", True, True, True, "field_notes"]],
-        inputs=[trace_input, include_user_context, redact_secrets, ignore_tool_calls, report_style],
+        examples=[
+            [
+                "examples/sample_trace_redacted.jsonl",
+                True,
+                True,
+                True,
+                "field_notes",
+                "deterministic",
+            ]
+        ],
+        inputs=[
+            trace_input,
+            include_user_context,
+            redact_secrets,
+            ignore_tool_calls,
+            report_style,
+            analysis_engine,
+        ],
         label="Try a redacted sample trace",
     )
 
@@ -229,6 +256,7 @@ with gr.Blocks(
             redact_secrets,
             ignore_tool_calls,
             report_style,
+            analysis_engine,
         ],
         outputs=[
             report_output,
