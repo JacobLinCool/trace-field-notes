@@ -114,8 +114,8 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertEqual(input_ids.device, "cuda")
         self.assertEqual(attention_mask.device, "cuda")
 
-    def test_qwen_chat_template_disables_thinking(self) -> None:
-        self.assertEqual(_chat_template_kwargs(QUICK_MODEL_ID), {"enable_thinking": False})
+    def test_qwen_chat_template_enables_thinking(self) -> None:
+        self.assertEqual(_chat_template_kwargs(QUICK_MODEL_ID), {"enable_thinking": True})
         self.assertEqual(_chat_template_kwargs(PRIMARY_MODEL_ID), {})
 
     def test_analyzer_records_unknown_engine_note(self) -> None:

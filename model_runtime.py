@@ -21,7 +21,7 @@ from schemas import AnalysisResult
 
 PRIMARY_MODEL_ID = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 QUICK_MODEL_ID = "Qwen/Qwen3.5-9B"
-MODEL_MAX_NEW_TOKENS = 4096
+MODEL_MAX_NEW_TOKENS = 8192
 
 MODEL_CHOICES = {
     "qwen": {
@@ -164,7 +164,7 @@ def _chat_template_kwargs(model_id: str) -> dict[str, Any]:
     """Model-specific chat-template controls."""
 
     if model_id.startswith("Qwen/"):
-        return {"enable_thinking": False}
+        return {"enable_thinking": True}
     return {}
 
 
