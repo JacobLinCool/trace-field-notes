@@ -21,7 +21,7 @@ from schemas import AnalysisResult
 
 PRIMARY_MODEL_ID = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 QUICK_MODEL_ID = "Qwen/Qwen3.5-9B"
-MODEL_MAX_NEW_TOKENS = 2048
+MODEL_MAX_NEW_TOKENS = 4096
 
 MODEL_CHOICES = {
     "qwen": {
@@ -113,6 +113,7 @@ def _local_generator(
         messages,
         add_generation_prompt=True,
         return_tensors="pt",
+        **_chat_template_kwargs(model_id),
     )
     generation_inputs, prompt_token_count = _prepare_generation_inputs(
         chat_inputs,
@@ -159,6 +160,14 @@ def _move_to_device(value: Any, device: Any) -> Any:
     return value
 
 
+def _chat_template_kwargs(model_id: str) -> dict[str, Any]:
+    """Model-specific chat-template controls."""
+
+    if model_id.startswith("Qwen/"):
+        return {"enable_thinking": False}
+    return {}
+
+
 def _load_model(model_id: str) -> Any:
     """Lazily load and cache a (tokenizer, model) pair on the GPU.
 
@@ -198,6 +207,8 @@ Return JSON with exactly these keys:
 - caveats: array of short strings
 
 Rules:
+- Return one valid JSON object and nothing else.
+- The first non-whitespace character must be {{ and the last must be }}.
 - Analyze only visible narrative messages.
 - Do not claim to know hidden reasoning.
 - Cite episode IDs where useful.

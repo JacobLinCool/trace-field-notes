@@ -11,6 +11,8 @@ from model_runtime import (
     MODEL_CHOICES,
     MODEL_MAX_NEW_TOKENS,
     PRIMARY_MODEL_ID,
+    QUICK_MODEL_ID,
+    _chat_template_kwargs,
     _prepare_generation_inputs,
     parse_model_json,
     run_model_assist,
@@ -111,6 +113,10 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertEqual(prompt_tokens, 21)
         self.assertEqual(input_ids.device, "cuda")
         self.assertEqual(attention_mask.device, "cuda")
+
+    def test_qwen_chat_template_disables_thinking(self) -> None:
+        self.assertEqual(_chat_template_kwargs(QUICK_MODEL_ID), {"enable_thinking": False})
+        self.assertEqual(_chat_template_kwargs(PRIMARY_MODEL_ID), {})
 
     def test_analyzer_records_unknown_engine_note(self) -> None:
         result, _ = analyze_trace_file(
