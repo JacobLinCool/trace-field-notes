@@ -161,6 +161,7 @@ function _smoothPath(pts) {
 
 function TrailMap({ episodes, selectedId, onSelect }) {
   const pts = _layout(episodes);
+  const compact = episodes.length > 6;
   const baseY = VBH - PAD.b;
   const line = _smoothPath(pts);
   const area = `${line} L ${pts[pts.length - 1].x} ${baseY} L ${pts[0].x} ${baseY} Z`;
@@ -212,13 +213,21 @@ function TrailMap({ episodes, selectedId, onSelect }) {
             return (
               <button
                 key={p.ep.episode_id}
-                className={"wp" + (sel ? " wp--sel" : "") + (above ? " wp--above" : " wp--below") + edge}
+                className={
+                  "wp"
+                  + (compact ? " wp--compact" : "")
+                  + (sel ? " wp--sel" : "")
+                  + (above ? " wp--above" : " wp--below")
+                  + edge
+                }
                 style={{ left: p.fx + "%", top: p.fy + "%", "--tone": toneColor(p.tone) }}
+                title={`${p.ep.episode_id}: ${p.ep.title}`}
+                aria-label={`Select ${p.ep.episode_id}: ${p.ep.title}`}
                 onClick={() => onSelect(p.ep.episode_id)}
               >
                 <span className="wp__id mono">{p.ep.episode_id}</span>
-                <span className="wp__title">{p.ep.title}</span>
-                <span className="wp__dur mono">{p.ep.message_span.duration_label}</span>
+                {(!compact || sel) ? <span className="wp__title">{p.ep.title}</span> : null}
+                {(!compact || sel) ? <span className="wp__dur mono">{p.ep.message_span.duration_label}</span> : null}
               </button>
             );
           })}
@@ -228,6 +237,34 @@ function TrailMap({ episodes, selectedId, onSelect }) {
         <span className="mono">start · {episodes[0].message_span.start_time}</span>
         <span className="label">progress through session →</span>
         <span className="mono">end · {episodes[episodes.length - 1].message_span.end_time}</span>
+      </div>
+    </div>
+  );
+}
+
+function EpisodeRail({ episodes, selectedId, onSelect }) {
+  if (episodes.length <= 6) return null;
+  return (
+    <div className="episode-rail" aria-label="Episode navigation">
+      <span className="label episode-rail__label">Episodes</span>
+      <div className="episode-rail__items">
+        {episodes.map((ep) => {
+          const tone = toneOf(ep.recovery_pattern);
+          const selected = ep.episode_id === selectedId;
+          return (
+            <button
+              key={ep.episode_id}
+              className={"episode-rail__item" + (selected ? " episode-rail__item--sel" : "")}
+              style={{ "--tone": toneColor(tone) }}
+              onClick={() => onSelect(ep.episode_id)}
+              title={`${ep.episode_id}: ${ep.title}`}
+            >
+              <ToneDot tone={tone} size={9} />
+              <span className="episode-rail__id mono">{ep.episode_id}</span>
+              <span className="episode-rail__title">{ep.title}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -321,7 +358,7 @@ function LedgerTimeline({ episodes, selectedId, onSelect }) {
   );
 }
 
-Object.assign(window, { TrailMap, EpisodeDetail, LedgerTimeline });
+Object.assign(window, { TrailMap, EpisodeRail, EpisodeDetail, LedgerTimeline });
 
 /* ============================================================
    report.jsx — the field report: verdict, trail, analysis sections
@@ -449,6 +486,7 @@ function TrailSection({ data, variant, selectedId, setSelectedId }) {
           : <TrailMap episodes={data.episodes} selectedId={ep.episode_id} onSelect={setSelectedId} />}
         <hr className="rule" />
         <Legend />
+        <EpisodeRail episodes={data.episodes} selectedId={ep.episode_id} onSelect={setSelectedId} />
       </div>
       <EpisodeDetail ep={ep} />
     </section>
