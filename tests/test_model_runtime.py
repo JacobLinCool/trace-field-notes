@@ -74,6 +74,16 @@ class ModelRuntimeTests(unittest.TestCase):
 
         self.assertEqual(memo["outcome_audit_memo"], MEMO_JSON["outcome_audit_memo"])
 
+    def test_parse_model_json_uses_final_object_after_thinking_braces(self) -> None:
+        raw = (
+            "<think>Draft {not json} and a scratch object "
+            '{"draft": "ignore this"} before the final answer.</think>\n'
+            + json.dumps(MEMO_JSON)
+        )
+        memo = parse_model_json(raw)
+
+        self.assertEqual(memo["executive_memo"], MEMO_JSON["executive_memo"])
+
     def test_run_model_assist_uses_selected_model(self) -> None:
         result, narrative = analyze_trace_file(Path("examples/sample_trace_redacted.jsonl"))
         generate = RecordingGenerator()

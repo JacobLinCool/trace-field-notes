@@ -252,14 +252,29 @@ def _loads_lenient(content: str) -> dict[str, Any]:
     try:
         parsed: Any = json.loads(text)
     except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        candidates = list(_json_object_candidates(text))
+        if not candidates:
             raise ValueError("Model response was not valid JSON.")
-        try:
-            parsed = json.loads(text[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise ValueError("Model response was not valid JSON.") from exc
+        parsed = candidates[-1]
 
     if not isinstance(parsed, dict):
         raise ValueError("Model response was not a JSON object.")
     return parsed
+
+
+def _json_object_candidates(text: str) -> list[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    cursor = 0
+    while True:
+        start = text.find("{", cursor)
+        if start == -1:
+            return candidates
+        try:
+            parsed, consumed = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        if isinstance(parsed, dict):
+            candidates.append(parsed)
+        cursor = start + max(consumed, 1)
