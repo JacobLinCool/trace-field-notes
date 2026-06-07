@@ -3,15 +3,30 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from model_runtime import MODEL_CHOICES, run_model_assist
+from model_runtime import MODEL_CHOICES, run_model_analysis
 from parser import parse_trace
+from profiling import Profiler, get_logger
 from redaction import redact_text
-from schemas import AnalysisResult, DifficultyEpisode, MessageSpan, NarrativeMessage
+from schemas import (
+    APPRAISALS,
+    DETOUR_TYPES,
+    DIFFICULTY_TYPES,
+    OUTCOME_CLAIMS,
+    RECOVERY_PATTERNS,
+    RESOLUTION_MODES,
+    AnalysisResult,
+    DifficultyEpisode,
+    MessageSpan,
+    NarrativeMessage,
+)
+
+logger = get_logger()
 
 
 ANALYSIS_SCOPE = (
@@ -143,26 +158,51 @@ PROBLEM_EVIDENCE_SIGNALS = {
 ANALYSIS_STEPS = ("extract", "redact", "chart", "classify", "synthesize")
 
 
+def _accumulate_notes(counter: Counter[str], notes: Iterable[str]) -> None:
+    """Fold ``"label: count"`` note strings into a running counter."""
+
+    for note in notes:
+        label, _, count = note.partition(": ")
+        counter[label] += int(count or 0)
+
+
 def stream_deterministic_analysis(
     path: str | Path,
     *,
     include_user_context: bool = True,
     redact_secrets: bool = True,
     ignore_tool_calls: bool = True,
+    model_redact=None,
+    profiler: Profiler | None = None,
+    stream_redact_progress: bool = False,
 ):
     """Run the deterministic pipeline as a generator.
 
-    Yields ``("step", name)`` after each real stage completes (the names in
-    :data:`ANALYSIS_STEPS`), then a final ``("result", (AnalysisResult, str))``.
-    Callers that don't care about progress can just drain it for the tuple.
+    Yields ``("progress", info)`` after each real stage completes — ``info`` has
+    a ``stage`` name (one of :data:`ANALYSIS_STEPS`) and the running ``messages``
+    count — then a final ``("result", (AnalysisResult, str))``. Callers that
+    don't care about progress can just drain it for the tuple.
+
+    ``model_redact`` is an optional ``(list[str]) -> list[RedactionResult]``
+    callable applied on top of regex redaction; the Server injects a GPU- or
+    CPU-bound ``openai/privacy-filter`` pass. It is absent locally and in tests,
+    so redaction falls back to regex only. ``profiler`` collects per-stage
+    timings; one is created if not supplied.
     """
 
+    prof = profiler or Profiler("deterministic")
+
+    _started = time.perf_counter()
     parsed_messages, agent_type = parse_trace(
         path,
         include_user_context=include_user_context,
         ignore_tool_calls=ignore_tool_calls,
     )
-    yield ("step", "extract")
+    prof.record("extract", time.perf_counter() - _started)
+    message_count = len(parsed_messages)
+    prof.mark(messages=message_count, agent=agent_type)
+    logger.info("parsed %d narrative messages (agent=%s)", message_count, agent_type)
+    yield ("progress", {"stage": "extract", "messages": message_count})
 
     redaction_count = 0
     privacy_notes = [
@@ -172,26 +212,79 @@ def stream_deterministic_analysis(
     if ignore_tool_calls:
         privacy_notes.append("Tool-call contents were ignored before analysis.")
 
+    _redact_started = time.perf_counter()
     messages = parsed_messages
     if redact_secrets:
-        redacted_messages: list[NarrativeMessage] = []
         all_notes: Counter[str] = Counter()
-        for message in parsed_messages:
-            red = redact_text(message.text)
-            redaction_count += red.count
-            for note in red.notes:
-                label, _, count = note.partition(": ")
-                all_notes[label] += int(count or 0)
-            redacted_messages.append(
-                NarrativeMessage(
-                    index=message.index,
-                    role=message.role,
-                    text=red.text,
-                    timestamp=message.timestamp,
-                    source=message.source,
+        redacted_messages: list[NarrativeMessage] = []
+        model_used = False
+        model_failed = False
+
+        # Process in chunks so slow (CPU) runs can stream per-message progress.
+        # Without streaming (ZeroGPU) it is a single chunk = one GPU allocation;
+        # with streaming the update count is capped at ~30 regardless of size.
+        if stream_redact_progress and message_count:
+            chunk = max(1, (message_count + 29) // 30)
+        else:
+            chunk = message_count or 1
+
+        for start in range(0, message_count, chunk):
+            chunk_messages = parsed_messages[start : start + chunk]
+
+            # Pass 1: deterministic regex redaction (always available).
+            regex_results = [redact_text(message.text) for message in chunk_messages]
+            texts = [red.text for red in regex_results]
+
+            # Pass 2: optional model PII pass on top. The Server injects a GPU- or
+            # CPU-bound openai/privacy-filter pass; it is absent locally and in
+            # tests, so regex-only redaction is used. Once it is unavailable we
+            # stop retrying it for the rest of the trace.
+            model_results = None
+            if model_redact is not None and not model_failed:
+                try:
+                    model_results = model_redact(texts)
+                    model_used = True
+                except Exception as exc:  # noqa: BLE001 - graceful degradation
+                    privacy_notes.append(
+                        "AI privacy filter was unavailable "
+                        f"({type(exc).__name__}); regex redaction was applied."
+                    )
+                    model_failed = True
+                    model_results = None
+
+            for i, message in enumerate(chunk_messages):
+                text = texts[i]
+                redaction_count += regex_results[i].count
+                _accumulate_notes(all_notes, regex_results[i].notes)
+                if model_results is not None:
+                    text = model_results[i].text
+                    redaction_count += model_results[i].count
+                    _accumulate_notes(all_notes, model_results[i].notes)
+                redacted_messages.append(
+                    NarrativeMessage(
+                        index=message.index,
+                        role=message.role,
+                        text=text,
+                        timestamp=message.timestamp,
+                        source=message.source,
+                    )
                 )
+            yield (
+                "progress",
+                {
+                    "stage": "redact",
+                    "processed": min(start + chunk, message_count),
+                    "total": message_count,
+                },
             )
+
         messages = redacted_messages
+
+        if model_used:
+            privacy_notes.append(
+                "AI privacy filter (openai/privacy-filter) screened for names, "
+                "contacts, and other personal data."
+            )
         if all_notes:
             privacy_notes.append(
                 "Redactions applied: "
@@ -199,14 +292,22 @@ def stream_deterministic_analysis(
                 + "."
             )
         else:
-            privacy_notes.append("No likely secrets matched the built-in redaction patterns.")
+            privacy_notes.append("No likely secrets matched the redaction patterns.")
     else:
         privacy_notes.append("Secret redaction was disabled by the user.")
-    yield ("step", "redact")
+    prof.record("redact", time.perf_counter() - _redact_started)
+    prof.mark(redactions=redaction_count)
+    if not redact_secrets or message_count == 0:
+        # No chunk loop ran (redaction disabled or empty trace) — still advance.
+        yield ("progress", {"stage": "redact", "processed": message_count, "total": message_count})
 
+    _chart_started = time.perf_counter()
     episodes = identify_episodes(messages)
-    yield ("step", "chart")
+    prof.record("chart", time.perf_counter() - _chart_started)
+    prof.mark(episodes=len(episodes))
+    yield ("progress", {"stage": "chart", "messages": message_count})
 
+    _classify_started = time.perf_counter()
     result = AnalysisResult(
         trace_title=derive_trace_title(path, agent_type),
         agent_type_guess=agent_type,
@@ -218,55 +319,194 @@ def stream_deterministic_analysis(
         redaction_count=redaction_count,
         engine="deterministic-codebook",
     )
-    yield ("step", "classify")
+    prof.record("classify", time.perf_counter() - _classify_started)
+    yield ("progress", {"stage": "classify", "messages": message_count})
 
+    _synth_started = time.perf_counter()
     narrative_text = render_redacted_narrative(messages)
-    yield ("step", "synthesize")
+    prof.record("synthesize", time.perf_counter() - _synth_started)
+    yield ("progress", {"stage": "synthesize", "messages": message_count})
 
-    yield ("result", (result, narrative_text))
+    yield ("result", (result, narrative_text, messages))
 
 
-def apply_model_assist(
+_PRODUCTIVE_VALUES = {"yes", "no", "mixed", "unknown"}
+_VALID_TONES = {"stable", "iterative", "detour", "partial", "risk", "unknown"}
+_VALID_HONESTY = {"candid", "mixed", "overclaimed"}
+
+
+def build_numbered_narrative(
+    messages: list[NarrativeMessage], *, char_budget: int = 16000, per_message: int = 320
+) -> str:
+    """Number the (redacted) messages by real index for the model.
+
+    Long traces are sampled evenly across the session (keeping the first and last)
+    so the model sees the whole timeline within its context budget; each line keeps
+    the message's real index and timestamp so the model can cite spans.
+    """
+
+    if not messages:
+        return ""
+    max_messages = max(1, char_budget // per_message)
+    if len(messages) <= max_messages:
+        chosen = messages
+    else:
+        stride = len(messages) / max_messages
+        picks = sorted({0, len(messages) - 1, *(int(i * stride) for i in range(max_messages))})
+        chosen = [messages[i] for i in picks if 0 <= i < len(messages)]
+    lines = []
+    for message in chosen:
+        snippet = " ".join(message.text.split())[:per_message]
+        lines.append(f"[{message.index}] {message.role} {message.timestamp or ''}: {snippet}")
+    return "\n".join(lines)
+
+
+def build_codebook_hint(episodes: list[DifficultyEpisode]) -> str:
+    if not episodes:
+        return "(none)"
+    return "; ".join(
+        f"{ep.episode_id} msgs {ep.message_span.start_index}-{ep.message_span.end_index}"
+        for ep in episodes[:12]
+    )
+
+
+def _coerce_code(value: object, vocab: dict[str, str]) -> str:
+    code = str(value or "").strip()
+    return code if code in vocab else "unknown"
+
+
+# Weak models sometimes echo the schema placeholders verbatim; drop those.
+_PLACEHOLDER_RE = re.compile(
+    r"^\s*(<.*>|<=.*|\d+(\s*-\s*\d+)?\s+sentences?.*|one key.*|short verbatim.*|up to \d+.*|a message index.*)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or _PLACEHOLDER_RE.match(text):
+        return ""
+    return text
+
+
+def _clean_verdict(verdict: dict) -> dict[str, str]:
+    tone = str(verdict.get("tone", "")).strip().lower()
+    honesty = str(verdict.get("honesty", "")).strip().lower()
+    return {
+        "tone": tone if tone in _VALID_TONES else "unknown",
+        "headline": _clean_text(verdict.get("headline")) or "Session analyzed by the model.",
+        "detail": _clean_text(verdict.get("detail")),
+        "honesty": honesty if honesty in _VALID_HONESTY else "mixed",
+    }
+
+
+def _episode_from_model(
+    raw: dict, ordinal: int, index_to_timestamp: dict[int, str | None], max_index: int
+) -> DifficultyEpisode:
+    def clamp(value: object) -> int:
+        try:
+            return max(0, min(int(value), max_index))
+        except (TypeError, ValueError):
+            return 0
+
+    start = clamp(raw.get("start_index", 0))
+    end = clamp(raw.get("end_index", start))
+    if end < start:
+        start, end = end, start
+    start_time = index_to_timestamp.get(start)
+    end_time = index_to_timestamp.get(end)
+    span = MessageSpan(
+        start_index=start,
+        end_index=end,
+        start_time=start_time,
+        end_time=end_time,
+        duration_label=duration_label(start_time, end_time) if start_time and end_time else "unknown",
+    )
+    productive = str(raw.get("productive_detour", "unknown")).strip().lower()
+    quotes = [cleaned for q in (raw.get("evidence_quotes") or []) if (cleaned := _clean_text(q))][:3]
+    difficulty = _clean_text(raw.get("reported_difficulty"))
+    title = _clean_text(raw.get("title")) or (difficulty[:60] if difficulty else "Difficulty episode")
+    return DifficultyEpisode(
+        episode_id=f"E{ordinal:02d}",
+        title=title,
+        message_span=span,
+        initial_intention=_clean_text(raw.get("initial_intention")),
+        reported_difficulty=difficulty,
+        difficulty_type=_coerce_code(raw.get("difficulty_type"), DIFFICULTY_TYPES),
+        appraisal=_coerce_code(raw.get("appraisal"), APPRAISALS),
+        strategy_before=_clean_text(raw.get("strategy_before")),
+        strategy_after=_clean_text(raw.get("strategy_after")),
+        detour_type=_coerce_code(raw.get("detour_type"), DETOUR_TYPES),
+        resolution_mode=_coerce_code(raw.get("resolution_mode"), RESOLUTION_MODES),
+        recovery_pattern=_coerce_code(raw.get("recovery_pattern"), RECOVERY_PATTERNS),
+        outcome_claim=_coerce_code(raw.get("outcome_claim"), OUTCOME_CLAIMS),
+        productive_detour=productive if productive in _PRODUCTIVE_VALUES else "unknown",
+        evidence_quotes=quotes,
+        analyst_memo=_clean_text(raw.get("analyst_memo")),
+    )
+
+
+def apply_model_analysis(
     result: AnalysisResult,
-    narrative_text: str,
+    messages: list[NarrativeMessage],
     analysis_engine: str,
     *,
     run=None,
 ) -> None:
-    """Augment a deterministic result with model assist, with graceful fallback.
+    """Replace the deterministic analysis with a model-produced one (codebook is the fallback).
 
-    ``run`` defaults to the module-level :func:`run_model_assist` (resolved at
-    call time so tests can monkeypatch it); the Server passes a GPU-wrapped
-    runner so model inference happens inside a ``@spaces.GPU`` allocation. The
-    result is mutated in place; any failure leaves the deterministic result and
-    records the reason in ``model_notes``.
+    ``run`` defaults to :func:`run_model_analysis` (resolved at call time so tests
+    can monkeypatch it); the Server passes a GPU- or CPU-bound runner. On success
+    the model's episodes, overall patterns, and verdict replace the rule-based
+    ones. On any failure the deterministic codebook result is kept and the reason
+    recorded in ``model_notes``.
     """
 
     if analysis_engine == "deterministic":
         return
     if analysis_engine not in MODEL_CHOICES:
         result.model_notes.append(
-            f"Unknown analysis engine {analysis_engine!r}; deterministic analysis was returned."
+            f"Unknown analysis engine {analysis_engine!r}; rule-based analysis was returned."
         )
         return
-    runner = run or run_model_assist
+
+    runner = run or run_model_analysis
+    numbered_narrative = build_numbered_narrative(messages)
+    codebook_hint = build_codebook_hint(result.episodes)
     try:
-        assist = runner(
+        produced = runner(
             engine=analysis_engine,
-            result=result,
-            narrative_text=narrative_text,
+            numbered_narrative=numbered_narrative,
+            agent_type=result.agent_type_guess,
+            codebook_hint=codebook_hint,
         )
     except Exception as exc:
         error_message = str(exc).strip().rstrip(".")
         result.model_notes.append(
-            "Model assist was requested but unavailable: "
+            "Model analysis was requested but unavailable: "
             f"{type(exc).__name__}: {error_message}. "
-            "Deterministic analysis was returned."
+            "Rule-based analysis was returned."
         )
+        return
+
+    analysis = produced.analysis
+    index_to_timestamp = {message.index: message.timestamp for message in messages}
+    max_index = (len(messages) - 1) if messages else 0
+    episodes = [
+        _episode_from_model(raw, ordinal + 1, index_to_timestamp, max_index)
+        for ordinal, raw in enumerate(analysis.get("episodes", []))
+    ]
+    result.episodes = episodes
+    patterns = analysis.get("overall_patterns")
+    if isinstance(patterns, dict) and patterns:
+        result.overall_patterns = {key: str(value) for key, value in patterns.items()}
     else:
-        result.engine = f"deterministic-codebook + {assist.model_id}"
-        result.model_memo = assist.memo
-        result.model_notes.append(assist.note)
+        result.overall_patterns = summarize_patterns(episodes, messages)
+    verdict = analysis.get("verdict")
+    if isinstance(verdict, dict) and verdict:
+        result.session_verdict = _clean_verdict(verdict)
+    result.engine = produced.model_id
+    result.model_notes.append(produced.note)
 
 
 def analyze_trace_file(
@@ -282,6 +522,7 @@ def analyze_trace_file(
 
     result: AnalysisResult | None = None
     narrative_text = ""
+    messages: list[NarrativeMessage] = []
     for kind, payload in stream_deterministic_analysis(
         path,
         include_user_context=include_user_context,
@@ -289,9 +530,9 @@ def analyze_trace_file(
         ignore_tool_calls=ignore_tool_calls,
     ):
         if kind == "result":
-            result, narrative_text = payload
+            result, narrative_text, messages = payload
     assert result is not None
-    apply_model_assist(result, narrative_text, analysis_engine)
+    apply_model_analysis(result, messages, analysis_engine)
     return result, narrative_text
 
 

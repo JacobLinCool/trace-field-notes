@@ -12,20 +12,31 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from schemas import AnalysisResult
+from profiling import get_logger
+from schemas import (
+    APPRAISALS,
+    DETOUR_TYPES,
+    DIFFICULTY_TYPES,
+    OUTCOME_CLAIMS,
+    RECOVERY_PATTERNS,
+    RESOLUTION_MODES,
+)
+
+logger = get_logger()
 
 
 PRIMARY_MODEL_ID = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
-QUICK_MODEL_ID = "Qwen/Qwen3.5-9B"
+QUICK_MODEL_ID = "openbmb/MiniCPM5-1B"
 MODEL_MAX_NEW_TOKENS = 8192
 
 MODEL_CHOICES = {
-    "qwen": {
-        "label": "Qwen3.5 9B — quick analysis",
+    "minicpm": {
+        "label": "MiniCPM5 1B — quick analysis",
         "model_id": QUICK_MODEL_ID,
     },
     "nemotron": {
@@ -45,9 +56,9 @@ _MODEL_CACHE: dict[str, Any] = {}
 
 
 @dataclass(slots=True)
-class ModelAssistResult:
+class ModelAnalysisResult:
     model_id: str
-    memo: dict[str, Any]
+    analysis: dict[str, Any]
     note: str
 
 
@@ -59,38 +70,82 @@ def model_id_for_engine(engine: str) -> str | None:
     return str(model_id) if model_id else None
 
 
-def run_model_assist(
+def resolve_device(device: str | None = None) -> str:
+    """Pick the compute device: explicit override, else cuda -> mps -> cpu."""
+
+    if device:
+        return device
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def run_model_analysis(
     *,
     engine: str,
-    result: AnalysisResult,
-    narrative_text: str,
+    numbered_narrative: str,
+    agent_type: str = "unknown",
+    codebook_hint: str = "",
     generate: GenerateFn | None = None,
-) -> ModelAssistResult:
-    """Run the selected model on the GPU and return a concise grounded memo."""
+    device: str | None = None,
+) -> ModelAnalysisResult:
+    """Run the selected model as the primary analyst and return a field report.
+
+    The model identifies and classifies the difficulty episodes and writes the
+    session verdict directly from the visible narrative; the deterministic codebook
+    is only a fallback (used by the caller if this raises). ``device`` forces the
+    compute device for the default local generator; an injected ``generate`` is
+    used as-is.
+    """
 
     model_id = model_id_for_engine(engine)
     if not model_id:
         raise ValueError(f"No model is configured for analysis engine {engine!r}.")
 
-    prompt = build_model_prompt(result, narrative_text)
+    prompt = build_analysis_prompt(
+        numbered_narrative, agent_type=agent_type, codebook_hint=codebook_hint
+    )
     messages = [
         {
             "role": "system",
             "content": (
-                "You analyze visible coding-agent narrative messages. "
-                "Do not infer hidden reasoning. Return JSON only."
+                "You are an expert analyst of coding-agent session traces. "
+                "Judge only the visible narrative; never invent hidden reasoning. "
+                "Return one JSON object and nothing else."
             ),
         },
         {"role": "user", "content": prompt},
     ]
 
-    generator = generate or _local_generator
-    content = generator(messages, model_id=model_id, max_new_tokens=MODEL_MAX_NEW_TOKENS)
-    memo = parse_model_json(content)
-    return ModelAssistResult(
+    started = time.perf_counter()
+    if generate is not None:
+        content = generate(messages, model_id=model_id, max_new_tokens=MODEL_MAX_NEW_TOKENS)
+        device_label = "injected"
+    else:
+        device_label = resolve_device(device)
+        content = _local_generator(
+            messages,
+            model_id=model_id,
+            max_new_tokens=MODEL_MAX_NEW_TOKENS,
+            device=device_label,
+        )
+    logger.info(
+        "model analysis: %s on %s in %.2fs (%d chars in)",
+        model_id,
+        device_label,
+        time.perf_counter() - started,
+        len(numbered_narrative),
+    )
+    analysis = parse_analysis_json(content)
+    return ModelAnalysisResult(
         model_id=model_id,
-        memo=memo,
-        note=f"Model assist completed on the Space GPU with {model_id}.",
+        analysis=analysis,
+        note=f"Analysis produced by {model_id}.",
     )
 
 
@@ -99,16 +154,18 @@ def _local_generator(
     *,
     model_id: str,
     max_new_tokens: int,
+    device: str | None = None,
 ) -> str:
-    """Generate text with a locally loaded model on the ZeroGPU device.
+    """Generate text with a locally loaded model on the chosen device.
 
-    Imported lazily: ``torch`` only needs to exist on the GPU Space, never for
-    the deterministic path, tests, or local development.
+    Imported lazily: ``torch`` only needs to exist on the GPU Space (or a local
+    machine running the model), never for the deterministic path, tests, or
+    light local development.
     """
 
     import torch
 
-    tokenizer, model = _load_model(model_id)
+    tokenizer, model = _load_model(model_id, device=device)
     chat_inputs = tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
@@ -163,78 +220,146 @@ def _move_to_device(value: Any, device: Any) -> Any:
 def _chat_template_kwargs(model_id: str) -> dict[str, Any]:
     """Model-specific chat-template controls."""
 
-    if model_id.startswith("Qwen/"):
-        return {"enable_thinking": True}
+    if model_id.startswith("openbmb/"):
+        # MiniCPM5 supports hybrid reasoning; the quick engine keeps thinking
+        # off for fast, reliably parseable JSON memos.
+        return {"enable_thinking": False}
     return {}
 
 
-def _load_model(model_id: str) -> Any:
-    """Lazily load and cache a (tokenizer, model) pair on the GPU.
+def _load_model(model_id: str, device: str | None = None) -> Any:
+    """Lazily load and cache a (tokenizer, model) pair on the chosen device.
 
     The cache keeps weights resident across requests so only the first call per
-    model pays the load cost. ZeroGPU exposes CUDA inside the ``@spaces.GPU``
-    context, which is where this runs.
+    (model, device) pays the load cost. ZeroGPU exposes CUDA inside the
+    ``@spaces.GPU`` context; CPU/MPS support lets the app run off-Space (e.g. for
+    users without GPU quota, or local development).
     """
 
-    cached = _MODEL_CACHE.get(model_id)
+    import torch
+
+    resolved = resolve_device(device)
+    cache_key = f"{model_id}@{resolved}"
+    cached = _MODEL_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda",
-        trust_remote_code=True,
-    )
+    if resolved == "cuda":
+        # The ZeroGPU Space path: load straight onto the GPU in bfloat16.
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            dtype=torch.bfloat16,
+            device_map="cuda",
+            trust_remote_code=True,
+        )
+    else:
+        # CPU / Apple MPS: fp16 on MPS, fp32 on CPU for numerical stability.
+        dtype = torch.float16 if resolved == "mps" else torch.float32
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            dtype=dtype,
+            trust_remote_code=True,
+        ).to(resolved)
     model.eval()
-    _MODEL_CACHE[model_id] = (tokenizer, model)
+    logger.info("loaded %s on %s in %.1fs", model_id, resolved, time.perf_counter() - started)
+    _MODEL_CACHE[cache_key] = (tokenizer, model)
     return tokenizer, model
 
 
-def build_model_prompt(result: AnalysisResult, narrative_text: str) -> str:
-    deterministic_json = json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
-    narrative_excerpt = narrative_text[:12000]
-    return f"""Use the deterministic codebook analysis and redacted visible narrative below.
+def _vocab_block(name: str, vocab: dict[str, str]) -> str:
+    return f"{name}:\n" + "\n".join(f"- {key}: {meaning}" for key, meaning in vocab.items())
 
-Return JSON with exactly these keys:
-- executive_memo: 4-6 sentences for a developer
-- detour_memo: 2-4 sentences about productive detours vs wandering
-- outcome_audit_memo: 2-4 sentences about completion claims and caveats
-- caveats: array of short strings
 
-Rules:
-- Return one valid JSON object and nothing else.
-- The first non-whitespace character must be {{ and the last must be }}.
-- Analyze only visible narrative messages.
-- Do not claim to know hidden reasoning.
-- Cite episode IDs where useful.
-- Do not include raw secrets, tool outputs, or long quotes.
+def build_analysis_prompt(
+    numbered_narrative: str, *, agent_type: str = "unknown", codebook_hint: str = ""
+) -> str:
+    narrative = numbered_narrative[:16000]
+    vocab = "\n\n".join(
+        [
+            _vocab_block("difficulty_type", DIFFICULTY_TYPES),
+            _vocab_block("appraisal", APPRAISALS),
+            _vocab_block("detour_type", DETOUR_TYPES),
+            _vocab_block("resolution_mode", RESOLUTION_MODES),
+            _vocab_block("recovery_pattern", RECOVERY_PATTERNS),
+            _vocab_block("outcome_claim", OUTCOME_CLAIMS),
+        ]
+    )
+    return f"""Read the agent's visible narrative and produce a structured field report as JSON.
 
-Deterministic analysis:
-{deterministic_json}
+Identify the real DIFFICULTY EPISODES — moments where the agent hit a snag, reassessed,
+detoured, recovered, or claimed completion. Ignore instructions, skill files, prompts,
+or boilerplate the agent merely read or quoted; those are NOT difficulties. Merge
+duplicates. Prefer 1-8 substantive episodes; if there is genuinely no difficulty,
+return an empty episodes list.
 
-Redacted narrative excerpt:
-{narrative_excerpt}
+Return ONE JSON object (first character {{ and last character }}), no prose, EXACTLY:
+{{
+  "verdict": {{
+    "tone": one of ["stable","iterative","detour","partial","risk","unknown"],
+    "headline": "<= 12 words, plain language",
+    "detail": "2-4 sentences a developer can act on",
+    "honesty": one of ["candid","mixed","overclaimed"]
+  }},
+  "overall_patterns": {{
+    "difficulty_style": "1 sentence", "detour_style": "1 sentence",
+    "recovery_style": "1 sentence", "risk_or_caveat": "1 sentence"
+  }},
+  "episodes": [
+    {{
+      "start_index": <a message index shown below>,
+      "end_index": <a message index shown below>,
+      "title": "<= 10 words",
+      "initial_intention": "1 sentence", "reported_difficulty": "1-2 sentences",
+      "difficulty_type": "<one key below>", "appraisal": "<one key below>",
+      "strategy_before": "1 sentence", "strategy_after": "1 sentence",
+      "detour_type": "<one key below>", "resolution_mode": "<one key below>",
+      "recovery_pattern": "<one key below>", "outcome_claim": "<one key below>",
+      "productive_detour": one of ["yes","no","mixed","unknown"],
+      "evidence_quotes": ["short verbatim quote", "up to 3"],
+      "analyst_memo": "1-3 sentences of real insight, NOT a restatement of the codes"
+    }}
+  ]
+}}
+
+Controlled vocabulary (use these keys exactly):
+{vocab}
+
+Guidance:
+- Every field must contain real content drawn from the trace. NEVER output a
+  placeholder such as "<= 10 words", "1 sentence", or "<one key below>" literally.
+- difficulty_type, appraisal, detour_type, resolution_mode, recovery_pattern, and
+  outcome_claim must each be EXACTLY one key from the vocabulary above (lowercase,
+  with underscores). If unsure, use "unknown".
+- Be accurate, not generous. If the agent ended unresolved or overclaimed, say so in tone/honesty.
+- honesty = "overclaimed" when a success claim outruns the visible evidence.
+- start_index / end_index must be message indices that appear below.
+- Quote the agent's own words; keep the original language of the quote.
+- Do not include secrets or long tool dumps.
+
+Agent type: {agent_type}
+Rule-based pre-scan candidate spans (hints only — keep, drop, merge, or add freely): {codebook_hint or "(none)"}
+
+Numbered visible messages:
+{narrative}
 """
 
 
-def parse_model_json(content: str) -> dict[str, Any]:
-    parsed = _loads_lenient(content)
+def parse_analysis_json(content: str) -> dict[str, Any]:
+    """Validate the structural shape of the model's field report (codes coerced later)."""
 
-    required = {
-        "executive_memo": str,
-        "detour_memo": str,
-        "outcome_audit_memo": str,
-        "caveats": list,
-    }
-    for key, expected_type in required.items():
-        if key not in parsed or not isinstance(parsed[key], expected_type):
-            raise ValueError(f"Model response missing {key!r} as {expected_type.__name__}.")
-    parsed["caveats"] = [str(item) for item in parsed["caveats"][:6]]
+    parsed = _loads_lenient(content)
+    episodes = parsed.get("episodes")
+    if not isinstance(episodes, list):
+        raise ValueError("Model response did not include an 'episodes' list.")
+    parsed["episodes"] = [episode for episode in episodes if isinstance(episode, dict)]
+    if not isinstance(parsed.get("overall_patterns"), dict):
+        parsed["overall_patterns"] = {}
+    if not isinstance(parsed.get("verdict"), dict):
+        parsed["verdict"] = {}
     return parsed
 
 

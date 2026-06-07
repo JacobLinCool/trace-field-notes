@@ -31,17 +31,21 @@ function TopBar() {
         </div>
       </div>
       <div className="topbar__right mono">
-        <span className="topbar__pill">narrative-only</span>
-        <span className="topbar__pill">privacy-first</span>
+        <span className="topbar__pill">build small</span>
       </div>
     </header>
   );
 }
 
 const ENGINES = [
-  ["qwen", "Quick analysis", "Qwen3.5 9B"],
+  ["minicpm", "Quick analysis", "MiniCPM5 1B"],
   ["nemotron", "Deeper analysis", "Nemotron 3 Nano 30B-A3B"],
   ["deterministic", "Rule-based", "no model, always on"],
+];
+
+const EXEC_MODES = [
+  ["zerogpu", "GPU", "Space GPU · faster"],
+  ["cpu", "CPU", "no GPU quota · slower"],
 ];
 
 function Toggle({ on, set, label, sub, locked }) {
@@ -61,7 +65,8 @@ function LandingView({ onAnalyze, onSample, error }) {
   const [staged, setStaged] = React.useState(null); // { name, file }
   const [redact, setRedact] = React.useState(true);
   const [userCtx, setUserCtx] = React.useState(true);
-  const [engine, setEngine] = React.useState("qwen");
+  const [engine, setEngine] = React.useState("minicpm");
+  const [execMode, setExecMode] = React.useState("zerogpu");
   const [dragOver, setDragOver] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const fileRef = React.useRef(null);
@@ -76,7 +81,7 @@ function LandingView({ onAnalyze, onSample, error }) {
   function pick() { if (fileRef.current) fileRef.current.click(); }
   function run() {
     if (!staged) return;
-    onAnalyze({ file: staged.file, include_user_context: userCtx, redact_secrets: redact, analysis_engine: engine, engineLabel });
+    onAnalyze({ file: staged.file, include_user_context: userCtx, redact_secrets: redact, analysis_engine: engine, execution_mode: execMode, engineLabel });
   }
 
   const AGENT_PROMPT = `Use this Space as a tool.
@@ -92,7 +97,7 @@ function LandingView({ onAnalyze, onSample, error }) {
       <TopBar />
 
       <section className="hero">
-        <h1 className="hero__title">See how your coding agent<br /> got stuck, detoured, recovered<span className="hero__amp"> &amp; </span>claimed success.</h1>
+        <h1 className="hero__title">See how your coding agent<br /> got stuck, detoured, recovered<span className="hero__amp"> &amp; </span><br />claimed success.</h1>
         <p className="hero__sub">
           Upload a Codex, Claude Code, or Pi Agent session log. Trace Field Notes reads only the agent's
           <em> narrated</em> messages — what it planned, where it snagged, how it rerouted, and how honestly it called it done —
@@ -104,7 +109,7 @@ function LandingView({ onAnalyze, onSample, error }) {
         <span className="privacy__mark">!</span>
         <p>
           Agent traces can carry prompts, command output, local paths, screenshots, secrets, and private code.
-          <b> Review and redact before uploading or sharing.</b> This app analyzes only visible narrative messages and ignores raw tool telemetry by default.
+          <b> Review and redact before uploading or sharing.</b> This app analyzes only visible narrative messages, ignores raw tool telemetry by default, and scrubs secrets and personal data with pattern rules plus OpenAI's privacy-filter model.
         </p>
       </div>
 
@@ -145,7 +150,7 @@ function LandingView({ onAnalyze, onSample, error }) {
           </div>
 
           <div className="opts">
-            <Toggle on={redact} set={setRedact} label="Redact likely secrets" sub="emails, tokens, keys, paths" />
+            <Toggle on={redact} set={setRedact} label="Redact secrets & personal data" sub="regex + AI: names, contacts, tokens, keys, paths" />
             <Toggle on={userCtx} set={setUserCtx} label="Include user context" sub="user prompts as framing" />
             <Toggle on={true} set={() => {}} locked label="Ignore tool contents" sub="locked for this release" />
           </div>
@@ -162,7 +167,22 @@ function LandingView({ onAnalyze, onSample, error }) {
                 </button>
               ))}
             </div>
-            <p className="engine__note muted">Quick uses Qwen3.5 9B on the Space GPU. Deeper uses Nemotron 3 Nano 30B-A3B. Rule-based needs no model and never fails.</p>
+            <p className="engine__note muted">Quick uses MiniCPM5 1B on the Space GPU. Deeper uses Nemotron 3 Nano 30B-A3B. Rule-based needs no model and never fails.</p>
+          </div>
+
+          <div className="engine">
+            <Label>Run on</Label>
+            <div className="engine__opts">
+              {EXEC_MODES.map(([key, name, detail]) => (
+                <button key={key}
+                  className={"engine__opt" + (execMode === key ? " engine__opt--on" : "")}
+                  onClick={() => setExecMode(key)}>
+                  <span className="engine__name">{name}</span>
+                  <span className="engine__detail mono">{detail}</span>
+                </button>
+              ))}
+            </div>
+            <p className="engine__note muted">ZeroGPU is fast but spends your Space GPU quota. CPU needs no quota and still works if you've run out — just slower, so the progress bar will move more gradually.</p>
           </div>
 
           <div className="panel__actions">
@@ -235,7 +255,14 @@ const PIPELINE = [
   "Synthesizing field notes",
 ];
 
-function Analyzing({ label, step }) {
+function fmtSeconds(s) {
+  if (s == null || isNaN(s)) return "—";
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+function Analyzing({ label, step, progress }) {
+  const pct = progress && typeof progress.pct === "number" ? Math.max(0, Math.min(100, progress.pct)) : null;
   return (
     <div className="analyzing">
       <div className="analyzing__card card card--raised">
@@ -247,6 +274,25 @@ function Analyzing({ label, step }) {
           <circle className="analyzing__dot" r="4.5" fill="var(--accent)" />
         </svg>
         <Kicker>Surveying the trace · {label}</Kicker>
+        {pct != null && (
+          <div style={{ margin: "12px 0 2px" }}>
+            <div style={{ height: 6, borderRadius: 4, background: "var(--rule)", overflow: "hidden" }}>
+              <div style={{ width: pct + "%", height: "100%", background: "var(--accent)", transition: "width .45s ease" }} />
+            </div>
+            <div className="mono muted" style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, marginTop: 7 }}>
+              <span>{pct}%{progress.stage ? " · " + progress.stage : ""}</span>
+              <span>
+                {progress.total != null
+                  ? (progress.processed != null && progress.processed < progress.total
+                      ? progress.processed + "/" + progress.total
+                      : progress.total) + " msgs · "
+                  : ""}
+                {fmtSeconds(progress.elapsed)} elapsed
+                {progress.eta != null && pct < 100 ? " · ~" + fmtSeconds(progress.eta) + " left" : ""}
+              </span>
+            </div>
+          </div>
+        )}
         <ul className="analyzing__steps">
           {PIPELINE.map((s, i) => (
             <li key={s} className={i < step ? "done" : i === step ? "active" : ""}>
@@ -286,11 +332,13 @@ function App() {
   const [engineLabel, setEngineLabel] = React.useState("");
   const [error, setError] = React.useState("");
   const [step, setStep] = React.useState(0);
+  const [progress, setProgress] = React.useState(null);
 
-  async function analyze({ file, include_user_context, redact_secrets, analysis_engine, engineLabel }) {
+  async function analyze({ file, include_user_context, redact_secrets, analysis_engine, execution_mode, engineLabel }) {
     setError("");
     setEngineLabel(engineLabel || analysis_engine);
     setStep(0);
+    setProgress(null);
     setStage("analyzing");
     window.scrollTo({ top: 0 });
     try {
@@ -302,6 +350,7 @@ function App() {
         include_user_context: !!include_user_context,
         redact_secrets: !!redact_secrets,
         analysis_engine,
+        execution_mode,
       });
       let result = null;
       for await (const msg of sub) {
@@ -312,6 +361,16 @@ function App() {
               result = p.result;
             } else if (typeof p.step === "number") {
               setStep(Math.min(p.step, PIPELINE.length - 1));
+            }
+            if (typeof p.pct === "number") {
+              setProgress({
+                pct: p.pct,
+                elapsed: p.elapsed,
+                eta: p.eta,
+                total: p.total,
+                processed: p.processed,
+                stage: p.stage,
+              });
             }
           }
         } else if (msg.type === "status") {
@@ -349,7 +408,7 @@ function App() {
       <div className="backdrop"><div className="grain" /><TopoBackground /></div>
       <div className="page">
         {stage === "landing" && <LandingView onAnalyze={analyze} onSample={loadSample} error={error} />}
-        {stage === "analyzing" && <Analyzing label={engineLabel} step={step} />}
+        {stage === "analyzing" && <Analyzing label={engineLabel} step={step} progress={progress} />}
         {stage === "report" && (
           <div className="report-wrap">
             <button className="report-back btn btn--sm btn--ghost" onClick={reset}>← New trace</button>

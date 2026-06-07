@@ -149,6 +149,7 @@ class AnalysisResult:
     engine: str = "deterministic-codebook"
     model_notes: list[str] = field(default_factory=list)
     model_memo: dict[str, Any] = field(default_factory=dict)
+    session_verdict: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,4 +164,5 @@ class AnalysisResult:
             "engine": self.engine,
             "model_notes": self.model_notes,
             "model_memo": self.model_memo,
+            "session_verdict": self.session_verdict,
         }

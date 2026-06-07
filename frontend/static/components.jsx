@@ -414,12 +414,22 @@ function ReportHeader({ data }) {
 }
 
 function ModelStatus({ data }) {
-  const notes = (data.privacy_notes || []).filter((note) => String(note).startsWith("Model assist"));
+  const notes = (data.privacy_notes || []).filter((note) =>
+    /^(Analysis produced|Model analysis|Model assist|Unknown analysis engine)/.test(String(note))
+  );
   if (!notes.length) return null;
+  const fellBack = notes.some((note) =>
+    /unavailable|rule-based analysis was returned|deterministic analysis was returned|unknown analysis engine/i.test(note)
+  );
   return (
     <div className="privacy model-status">
-      <span className="privacy__mark">!</span>
-      <p><b>Model assist fell back to the rule-based analyzer.</b> {notes.join(" ")}</p>
+      <span className="privacy__mark">{fellBack ? "!" : "✓"}</span>
+      <p>
+        <b>{fellBack
+          ? "Model unavailable — showing the rule-based analysis instead."
+          : "This report was written by the model."}</b>{" "}
+        {notes.join(" ")}
+      </p>
     </div>
   );
 }

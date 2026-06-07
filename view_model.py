@@ -71,7 +71,7 @@ def build_view_model(
         "narrative_message_count": base["narrative_message_count"],
         "redaction_count": base["redaction_count"],
         "duration_total": _duration_total(raw_episodes),
-        "verdict": _verdict(episodes, base["overall_patterns"], result.model_memo),
+        "verdict": base.get("session_verdict") or _verdict(episodes, base["overall_patterns"], result.model_memo),
         "overall_patterns": base["overall_patterns"],
         "privacy_notes": list(base["privacy_notes"]) + list(base.get("model_notes") or []),
         "episodes": episodes,
