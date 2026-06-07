@@ -376,6 +376,17 @@ function ReportHeader({ data }) {
   );
 }
 
+function ModelStatus({ data }) {
+  const notes = (data.privacy_notes || []).filter((note) => String(note).startsWith("Model assist"));
+  if (!notes.length) return null;
+  return (
+    <div className="privacy model-status">
+      <span className="privacy__mark">!</span>
+      <p><b>Model assist fell back to the rule-based analyzer.</b> {notes.join(" ")}</p>
+    </div>
+  );
+}
+
 function Verdict({ data }) {
   const v = data.verdict;
   const tm = window.TFN.TONE_META[v.tone];
@@ -601,6 +612,7 @@ function ReportView({ data, variant, onReset }) {
   return (
     <div className="report">
       <ReportHeader data={data} />
+      <ModelStatus data={data} />
       <Verdict data={data} />
       <TrailSection data={data} variant={variant} selectedId={selectedId} setSelectedId={setSelectedId} />
       <DifficultyMap data={data} />

@@ -75,7 +75,7 @@ def agents_md() -> str:
 
 @spaces.GPU(size="xlarge", duration=180)
 def _model_assist_gpu(*, engine, result, narrative_text):
-    """Run the small-model assist inside a ZeroGPU allocation."""
+    """Run model assist inside a ZeroGPU allocation."""
 
     from model_runtime import run_model_assist
 
@@ -84,7 +84,7 @@ def _model_assist_gpu(*, engine, result, narrative_text):
 
 # completed-step count for the frontend's 6-item checklist
 # (item 0 "uploading" is done once the request reaches us).
-_STEP_COUNT = {"extract": 2, "redact": 3, "chart": 4, "classify": 5, "synthesize": 5}
+_STEP_COUNT = {"extract": 2, "redact": 3, "chart": 4, "classify": 5, "synthesize": 6}
 
 
 def _file_fields(trace_file: object) -> tuple[str | None, str | None]:

@@ -162,7 +162,7 @@ function LandingView({ onAnalyze, onSample, error }) {
                 </button>
               ))}
             </div>
-            <p className="engine__note muted">Quick and Deeper run a small model on the Space GPU. Rule-based needs no model and never fails.</p>
+            <p className="engine__note muted">Quick uses Qwen3.5 9B on the Space GPU. Deeper uses Nemotron 3 Nano 30B-A3B. Rule-based needs no model and never fails.</p>
           </div>
 
           <div className="panel__actions">
@@ -338,7 +338,7 @@ function App() {
 
   function reset() { setStage("landing"); setData(null); window.scrollTo({ top: 0 }); }
 
-  const reportData = data ? Object.assign({}, data, { engine: engineLabel || data.engine }) : null;
+  const reportData = data ? Object.assign({}, data, { requested_engine: engineLabel || data.engine }) : null;
   const hasEpisodes = reportData && reportData.episodes && reportData.episodes.length;
 
   return (

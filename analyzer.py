@@ -37,6 +37,7 @@ DIFFICULTY_SIGNALS = {
     "not sure",
     "risk",
     "regression",
+    "compatibility",
     "however",
     "but",
     "unfortunately",
@@ -82,7 +83,7 @@ SHIFT_SIGNALS = {
     "decompose",
     "split",
     "break down",
-    "rollback",
+    "roll back",
     "revert",
     "try another",
     "workaround",
@@ -108,6 +109,34 @@ OUTCOME_SIGNALS = {
     "caveat",
     "partial",
     "partially",
+}
+
+PROBLEM_EVIDENCE_SIGNALS = {
+    "failed",
+    "failure",
+    "fails",
+    "still failing",
+    "test failing",
+    "issue",
+    "bug",
+    "blocked",
+    "blocker",
+    "cannot",
+    "can't",
+    "could not",
+    "unclear",
+    "ambiguous",
+    "not sure",
+    "risk",
+    "regression",
+    "unfortunately",
+    "missing",
+    "incomplete",
+    "permission",
+    "dependency",
+    "conflict",
+    "mismatch",
+    "unexpected",
 }
 
 
@@ -360,12 +389,18 @@ def build_episode(
     span_messages: list[NarrativeMessage],
 ) -> DifficultyEpisode:
     combined = "\n\n".join(message.text for message in span_messages)
-    difficulty_sentence = first_sentence_with(combined, DIFFICULTY_SIGNALS) or first_sentence(combined)
+    difficulty_sentence = first_difficulty_sentence(combined) or first_sentence(combined)
     intention = first_sentence_with(combined, INTENTION_SIGNALS) or first_sentence(combined)
-    shift_sentence = first_sentence_with(combined, SHIFT_SIGNALS)
-    outcome_sentence = first_sentence_with(combined, OUTCOME_SIGNALS)
+    shift_sentence = first_sentence_after_with(
+        combined,
+        SHIFT_SIGNALS,
+        after_sentence=difficulty_sentence,
+    )
+    outcome_sentence = last_sentence_with(combined, OUTCOME_SIGNALS)
 
-    difficulty_type = classify_difficulty(combined)
+    difficulty_type = classify_difficulty(difficulty_sentence)
+    if difficulty_type == "unknown":
+        difficulty_type = classify_difficulty(combined)
     appraisal = classify_appraisal(combined)
     detour_type = classify_detour(combined)
     resolution_mode = classify_resolution(combined)
@@ -409,8 +444,25 @@ def build_episode(
 
 
 def signal_score(text: str, signals: set[str]) -> int:
-    lowered = text.lower()
-    return sum(1 for signal in signals if signal in lowered)
+    return sum(1 for signal in signals if contains_signal(text, signal))
+
+
+def contains_signal(text: str, signal: str) -> bool:
+    """Match a codebook signal as a token or phrase, never as an arbitrary substring."""
+
+    needle = signal.strip().lower()
+    if not needle:
+        return False
+    pattern = re.escape(needle).replace(r"\ ", r"\s+")
+    if needle[0].isalnum():
+        pattern = rf"(?<![a-z0-9]){pattern}"
+    if needle[-1].isalnum():
+        pattern = rf"{pattern}(?![a-z0-9])"
+    return re.search(pattern, text.lower()) is not None
+
+
+def contains_any(text: str, needles: Iterable[str]) -> bool:
+    return any(contains_signal(text, needle) for needle in needles)
 
 
 def first_sentence(text: str) -> str:
@@ -424,6 +476,46 @@ def first_sentence_with(text: str, signals: set[str]) -> str:
     return ""
 
 
+def last_sentence_with(text: str, signals: set[str]) -> str:
+    for sentence in reversed(split_sentences(text)):
+        if signal_score(sentence, signals):
+            return sentence
+    return ""
+
+
+def first_sentence_after_with(
+    text: str,
+    signals: set[str],
+    *,
+    after_sentence: str,
+) -> str:
+    sentences = split_sentences(text)
+    start = 0
+    if after_sentence in sentences:
+        start = sentences.index(after_sentence) + 1
+    for sentence in sentences[start:]:
+        if signal_score(sentence, signals):
+            return sentence
+    return first_sentence_with(text, signals)
+
+
+def first_difficulty_sentence(text: str) -> str:
+    signaled = [
+        sentence
+        for sentence in split_sentences(text)
+        if signal_score(sentence, DIFFICULTY_SIGNALS)
+    ]
+    if not signaled:
+        return ""
+    for sentence in signaled:
+        if not signal_score(sentence, INTENTION_SIGNALS) or contains_any(
+            sentence,
+            PROBLEM_EVIDENCE_SIGNALS,
+        ):
+            return sentence
+    return signaled[0]
+
+
 def split_sentences(text: str) -> list[str]:
     normalized = re.sub(r"\s+", " ", text).strip()
     if not normalized:
@@ -435,10 +527,10 @@ def split_sentences(text: str) -> list[str]:
 def classify_difficulty(text: str) -> str:
     lowered = text.lower()
     checks = [
-        ("environment_blocker", ("dependency", "install", "permission", "auth", "network", "timeout", "sandbox", "environment", "ci", "build fail")),
         ("verification_difficulty", ("verify", "verification", "test", "reproduce", "confirmed", "validate", "cannot run", "not able to run")),
-        ("compatibility_risk", ("regression", "break", "compatibility", "existing behavior", "side effect", "risk", "backward")),
         ("requirement_uncertainty", ("requirement", "spec", "unclear", "ambiguous", "user intent", "not specified", "scope unclear")),
+        ("environment_blocker", ("dependency", "install", "permission", "auth", "network", "timeout", "sandbox", "environment", "ci", "build fail")),
+        ("compatibility_risk", ("regression", "break", "compatibility", "existing behavior", "side effect", "risk", "backward")),
         ("localization_difficulty", ("where", "locate", "which file", "module", "root cause", "grep", "search", "trace through")),
         ("architecture_complexity", ("architecture", "dependency", "shared", "coupling", "system structure", "cross-module", "data flow")),
         ("implementation_difficulty", ("implement", "tricky", "complex", "not sure how", "hard to", "edge case")),
@@ -467,7 +559,7 @@ def classify_detour(text: str) -> str:
     lowered = text.lower()
     checks = [
         ("premature_closure", ("done", "complete", "fixed", "should work")),
-        ("rollback_or_reversal", ("rollback", "roll back", "revert", "abandon", "undo")),
+        ("rollback_or_reversal", ("roll back", "rollback the", "revert", "abandon", "undo")),
         ("verification_shift", ("verify with", "instead test", "different verification", "check by", "validate by")),
         ("hypothesis_switch", ("new hypothesis", "different hypothesis", "assumption was", "turns out")),
         ("workaround", ("workaround", "bypass", "skip the issue", "without fixing", "temporary fix")),
@@ -500,21 +592,40 @@ def classify_resolution(text: str) -> str:
 
 def classify_outcome(text: str) -> str:
     lowered = text.lower()
-    if any(token in lowered for token in ("not resolved", "still failing", "could not", "unable to")):
+    success_claim = contains_any(
+        lowered,
+        ("done", "fixed", "implemented", "resolved", "complete", "verified", "passes"),
+    )
+    unresolved_evidence = contains_any(
+        lowered,
+        (
+            "still failing",
+            "still fails",
+            "skipped",
+            "skip the issue",
+            "workaround",
+            "without fixing",
+            "should work",
+        ),
+    )
+    if success_claim and unresolved_evidence:
+        return "premature_success_claim"
+    if contains_any(lowered, ("not resolved", "still failing", "could not", "unable to")):
         return "not_resolved"
-    if any(token in lowered for token in ("need to verify", "needs verification", "not verified", "cannot verify", "can't verify")):
+    if contains_any(lowered, ("need to verify", "needs verification", "not verified", "cannot verify", "can't verify")):
         return "needs_verification"
-    if any(token in lowered for token in ("partial", "partially", "some of", "subset")):
+    if contains_any(lowered, ("partial", "partially", "some of", "subset")):
         return "partially_resolved"
-    if any(token in lowered for token in ("caveat", "assuming", "should", "likely", "not run")) and any(
-        token in lowered for token in ("done", "fixed", "implemented", "resolved", "complete")
+    if contains_any(lowered, ("caveat", "assuming", "should", "likely", "not run")) and contains_any(
+        lowered,
+        ("done", "fixed", "implemented", "resolved", "complete"),
     ):
         return "resolved_with_caveat"
-    if any(token in lowered for token in ("done", "fixed", "implemented", "resolved", "complete", "verified", "passes")):
+    if success_claim:
         if signal_score(text, DIFFICULTY_SIGNALS) >= 3 and "verified" not in lowered and "passes" not in lowered:
             return "premature_success_claim"
         return "resolved_with_confidence"
-    if any(token in lowered for token in ("uncertain", "not sure", "proceed")):
+    if contains_any(lowered, ("uncertain", "not sure", "proceed")):
         return "uncertain_but_proceeding"
     return "unknown"
 
@@ -548,7 +659,7 @@ def classify_productive_detour(detour_type: str, outcome_claim: str, recovery_pa
 
 def first_matching_code(lowered_text: str, checks: list[tuple[str, tuple[str, ...]]]) -> str:
     for code, needles in checks:
-        if any(needle in lowered_text for needle in needles):
+        if contains_any(lowered_text, needles):
             return code
     return "unknown"
 
