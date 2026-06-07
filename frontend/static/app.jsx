@@ -308,8 +308,11 @@ function App() {
         if (msg.type === "data") {
           const p = Array.isArray(msg.data) ? msg.data[0] : msg.data;
           if (p && typeof p === "object") {
-            if (typeof p.step === "number") setStep(p.step);
-            if (p.result) result = p.result;
+            if (p.result) {
+              result = p.result;
+            } else if (typeof p.step === "number") {
+              setStep(Math.min(p.step, PIPELINE.length - 1));
+            }
           }
         } else if (msg.type === "status") {
           if (msg.stage === "error") throw new Error(msg.message || "The analyzer failed on the server.");

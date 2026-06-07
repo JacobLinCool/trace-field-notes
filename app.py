@@ -82,9 +82,10 @@ def _model_assist_gpu(*, engine, result, narrative_text):
     return run_model_assist(engine=engine, result=result, narrative_text=narrative_text)
 
 
-# completed-step count for the frontend's 6-item checklist
-# (item 0 "uploading" is done once the request reaches us).
-_STEP_COUNT = {"extract": 2, "redact": 3, "chart": 4, "classify": 5, "synthesize": 6}
+# Completed-step count for the frontend's 6-item checklist. Keep the final
+# synthesis row active until the final payload is ready, because model assist
+# runs after deterministic synthesis on the ZeroGPU path.
+_STEP_COUNT = {"extract": 2, "redact": 3, "chart": 4, "classify": 5, "synthesize": 5}
 
 
 def _file_fields(trace_file: object) -> tuple[str | None, str | None]:
