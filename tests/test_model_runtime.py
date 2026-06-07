@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from analyzer import analyze_trace_file
-from model_runtime import MODEL_CHOICES, PRIMARY_MODEL_ID, parse_model_json, run_model_assist
+from model_runtime import (
+    MODEL_CHOICES,
+    MODEL_MAX_NEW_TOKENS,
+    PRIMARY_MODEL_ID,
+    _prepare_generation_inputs,
+    parse_model_json,
+    run_model_assist,
+)
 
 
 MEMO_JSON = {
@@ -29,6 +36,16 @@ class RecordingGenerator:
             {"messages": messages, "model_id": model_id, "max_new_tokens": max_new_tokens}
         )
         return json.dumps(MEMO_JSON)
+
+
+class FakeTensor:
+    def __init__(self, shape: tuple[int, ...]) -> None:
+        self.shape = shape
+        self.device = None
+
+    def to(self, device: str) -> "FakeTensor":
+        self.device = device
+        return self
 
 
 class ModelRuntimeTests(unittest.TestCase):
@@ -69,6 +86,31 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertEqual(assist.model_id, PRIMARY_MODEL_ID)
         self.assertIn("upload-boundary", assist.memo["executive_memo"])
         self.assertEqual(generate.calls[0]["model_id"], PRIMARY_MODEL_ID)
+        self.assertEqual(generate.calls[0]["max_new_tokens"], MODEL_MAX_NEW_TOKENS)
+
+    def test_prepare_generation_inputs_accepts_tensor_output(self) -> None:
+        tensor = FakeTensor((1, 12))
+
+        generation_inputs, prompt_tokens = _prepare_generation_inputs(tensor, device="cuda")
+
+        self.assertEqual(generation_inputs, {"inputs": tensor})
+        self.assertEqual(prompt_tokens, 12)
+        self.assertEqual(tensor.device, "cuda")
+
+    def test_prepare_generation_inputs_expands_batch_encoding_output(self) -> None:
+        input_ids = FakeTensor((1, 21))
+        attention_mask = FakeTensor((1, 21))
+
+        generation_inputs, prompt_tokens = _prepare_generation_inputs(
+            {"input_ids": input_ids, "attention_mask": attention_mask},
+            device="cuda",
+        )
+
+        self.assertEqual(generation_inputs["input_ids"], input_ids)
+        self.assertEqual(generation_inputs["attention_mask"], attention_mask)
+        self.assertEqual(prompt_tokens, 21)
+        self.assertEqual(input_ids.device, "cuda")
+        self.assertEqual(attention_mask.device, "cuda")
 
     def test_analyzer_records_unknown_engine_note(self) -> None:
         result, _ = analyze_trace_file(

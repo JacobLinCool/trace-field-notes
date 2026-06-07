@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ from schemas import AnalysisResult
 
 PRIMARY_MODEL_ID = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 QUICK_MODEL_ID = "Qwen/Qwen3.5-9B"
+MODEL_MAX_NEW_TOKENS = 2048
 
 MODEL_CHOICES = {
     "qwen": {
@@ -83,7 +85,7 @@ def run_model_assist(
     ]
 
     generator = generate or _local_generator
-    content = generator(messages, model_id=model_id, max_new_tokens=900)
+    content = generator(messages, model_id=model_id, max_new_tokens=MODEL_MAX_NEW_TOKENS)
     memo = parse_model_json(content)
     return ModelAssistResult(
         model_id=model_id,
@@ -107,19 +109,54 @@ def _local_generator(
     import torch
 
     tokenizer, model = _load_model(model_id)
-    inputs = tokenizer.apply_chat_template(
+    chat_inputs = tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
         return_tensors="pt",
-    ).to(model.device)
+    )
+    generation_inputs, prompt_token_count = _prepare_generation_inputs(
+        chat_inputs,
+        device=model.device,
+    )
     with torch.no_grad():
         generated = model.generate(
-            inputs,
+            **generation_inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
-    completion = generated[0][inputs.shape[-1]:]
+    completion = generated[0][prompt_token_count:]
     return tokenizer.decode(completion, skip_special_tokens=True)
+
+
+def _prepare_generation_inputs(chat_inputs: Any, *, device: Any) -> tuple[dict[str, Any], int]:
+    """Move tokenizer output to device and return kwargs plus prompt length.
+
+    ``apply_chat_template`` may return either a tensor-like object or a
+    ``BatchEncoding``/mapping depending on the tokenizer. ``generate`` accepts
+    tensor input through the ``inputs=`` keyword and mapping input through
+    expanded kwargs such as ``input_ids`` and ``attention_mask``.
+    """
+
+    moved = _move_to_device(chat_inputs, device)
+    if isinstance(moved, Mapping):
+        generation_inputs = {
+            key: _move_to_device(value, device)
+            for key, value in moved.items()
+        }
+        input_ids = generation_inputs.get("input_ids")
+        if input_ids is None or not hasattr(input_ids, "shape"):
+            raise ValueError("Tokenizer output did not include tensor-shaped input_ids.")
+        return generation_inputs, int(input_ids.shape[-1])
+
+    if not hasattr(moved, "shape"):
+        raise ValueError("Tokenizer output was neither a tensor nor a mapping.")
+    return {"inputs": moved}, int(moved.shape[-1])
+
+
+def _move_to_device(value: Any, device: Any) -> Any:
+    if hasattr(value, "to"):
+        return value.to(device)
+    return value
 
 
 def _load_model(model_id: str) -> Any:
